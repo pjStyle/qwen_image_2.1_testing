@@ -2,6 +2,8 @@
 
 A local Windows web interface for the official [Qwen Image 2.1](https://huggingface.co/Qwen/Qwen-Image-2.1) model. It offers text-to-image generation, image editing with up to ten reference images, and batch video frame processing.
 
+For a GPU Pod, see [Runpod quick start](RUNPOD.md).
+
 ## Requirements
 
 - NVIDIA GPU with 16 GB VRAM (tested target: RTX 5070 Ti), current driver, and sufficient system RAM for CPU offload.

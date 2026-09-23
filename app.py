@@ -274,10 +274,17 @@ def build_app() -> gr.Blocks:
 
 if __name__ == "__main__":
     os.environ.setdefault("HF_HOME", str(__import__("pathlib").Path(__file__).resolve().parent / ".hf-cache"))
+    host = os.environ.get("QWEN_HOST", "127.0.0.1")
+    port = int(os.environ.get("QWEN_PORT", "7860"))
+    password = os.environ.get("QWEN_AUTH_PASSWORD")
+    if host not in {"127.0.0.1", "localhost", "::1"} and not password:
+        raise RuntimeError("QWEN_AUTH_PASSWORD is required when QWEN_HOST is not localhost.")
+    auth = (os.environ.get("QWEN_AUTH_USER", "qwen"), password) if password else None
     from qwen_workspace.check_environment import main as check_environment
 
     check_environment()
-    log.info("Starting local interface at http://127.0.0.1:7860")
+    log.info("Starting interface on %s:%s", host, port)
     build_app().queue(max_size=1, default_concurrency_limit=1).launch(
-        server_name="127.0.0.1", server_port=7860, share=False, inbrowser=True
+        server_name=host, server_port=port, share=False,
+        inbrowser=host in {"127.0.0.1", "localhost", "::1"}, auth=auth,
     )

@@ -1,0 +1,26 @@
+# Local environment and downloaded dependencies
+/.venv/
+/.uv-cache/
+/.uv-python/
+/.hf-cache/
+/models/
+
+# Generated images, videos, and job data
+/outputs/
+
+# Python caches and test artifacts
+__pycache__/
+.pytest_cache/
+*.pyc
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Local secrets and editor settings
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/

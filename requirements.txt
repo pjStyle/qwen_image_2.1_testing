@@ -1,0 +1,8 @@
+accelerate==1.15.0
+gradio==6.28.0
+huggingface-hub==1.32.0
+imageio-ffmpeg==0.6.0
+pillow==12.3.0
+transformers==5.17.0
+# QwenImage21Pipeline is not in the latest stable Diffusers release yet.
+diffusers @ git+https://github.com/huggingface/diffusers.git@8b3c707ebd3ec4881f4190cf42931da07eaf3b65

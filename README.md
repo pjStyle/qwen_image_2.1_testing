@@ -1,6 +1,6 @@
 # Qwen Image 2.1 Local
 
-A local Windows web interface for the official [Qwen Image 2.1](https://huggingface.co/Qwen/Qwen-Image-2.1) model. It offers text-to-image generation, image editing with up to ten reference images, and batch video frame processing.
+A local Windows web interface for the official [Qwen Image 2.1](https://huggingface.co/Qwen/Qwen-Image-2.1) model. It offers text-to-image generation, image editing with up to ten reference images, video frame upscaling, and experimental video editing.
 
 For a GPU Pod, see [Runpod quick start](RUNPOD.md).
 
@@ -35,5 +35,9 @@ Each result is saved as a PNG in `outputs/`, beside a JSON file with its prompt,
 3. Use **Pause after current frame** to stop after the active inference finishes. The Job ID and completed frames stay in `outputs/video_jobs/<job-id>/`. To continue after restarting the app, enter the Job ID, click **Load saved job**, then **Start / resume**. Settings are locked after the first processed frame. Failed jobs can also resume after the issue is fixed.
 
 When all frames are ready, the app saves an H.264 MP4 with source audio when present. The Video tab previews representative source and Qwen frames, plays the result, and offers ZIP downloads of either frame set. All source files, frames, and output videos remain in the job folder until you delete that folder. Qwen may reinterpret details or create flicker between independently processed frames, even with the preservation prompt.
+
+## Experimental video edit
+
+Open **Video Edit (experimental)**, upload a clip, and extract frames as above. Enter one change to apply to every frame, such as “Change the red car to blue.” The app asks Qwen to preserve everything else, but each frame is edited independently, so the change may vary or flicker. Try a short clip at a low FPS first. This tab has its own saved jobs, pause/resume flow, edited frame ZIP, and completed MP4 with source audio. Its results are stored in `outputs/video_jobs/<job-id>/edited_frames/` and `edited.mp4`.
 
 The model is distributed under the [Qwen Research License Agreement](https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE). Read its terms before using or distributing outputs beyond personal testing.

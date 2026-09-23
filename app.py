@@ -12,8 +12,8 @@ import gradio as gr
 from qwen_workspace.core import ASPECTS, QUALITY_PIXELS, save_result, validate_request
 from qwen_workspace.model import infer
 from qwen_workspace.video import (
-    DEFAULT_PROMPT, PauseRequested, create_job, load_job, preview_frames, process_job,
-    target_dimensions, zip_frames,
+    DEFAULT_PROMPT, EDIT_PROMPT_HINT, PauseRequested, create_job, job_mode, load_job,
+    preview_frames, process_job, require_job_mode, target_dimensions, zip_frames,
 )
 
 
@@ -82,12 +82,13 @@ def controls(prefix: str):
 
 def _video_status(job: dict, extra: str = "") -> str:
     folder = Path(__file__).resolve().parent / "outputs" / "video_jobs" / job["id"]
+    result_dir = "edited_frames" if job_mode(job) == "edit" else "upscaled_frames"
     message = (
         f"**Job {job['id']}** · {job['status']} · "
         f"{job.get('completed_frames', 0)}/{job['frame_count']} frames · "
         f"{job['fps']} FPS · {job['output_duration_seconds']:.1f} s output\n\n"
         f"Source frames: `{folder / 'source_frames'}`  \n"
-        f"Qwen frames: `{folder / 'upscaled_frames'}`"
+        f"Qwen frames: `{folder / result_dir}`"
     )
     if extra:
         message += f"\n\n{extra}"
@@ -107,12 +108,12 @@ def video_size_note(job_id: str, long_edge: float) -> str:
         return "Extract or load a valid video job to see its output dimensions."
 
 
-def extract_video(video_path: str | None, fps: float, start: float, end: float | None, long_edge: float, progress=gr.Progress()):
+def extract_video(video_path: str | None, fps: float, start: float, end: float | None, long_edge: float, mode: str, progress=gr.Progress()):
     if not video_path:
         raise gr.Error("Upload a video first.")
     progress(0, desc="Copying video and extracting frames")
     try:
-        job = create_job(video_path, int(fps), float(start or 0), float(end) if end is not None else None)
+        job = create_job(video_path, int(fps), float(start or 0), float(end) if end is not None else None, mode=mode)
     except Exception as exc:
         log.exception("Video extraction failed")
         raise gr.Error(str(exc)) from exc
@@ -122,27 +123,32 @@ def extract_video(video_path: str | None, fps: float, start: float, end: float |
     ), video_size_note(job["id"], long_edge)
 
 
-def load_video_job(job_id: str):
+def load_video_job(job_id: str, mode: str):
     try:
-        job = load_job(job_id)
+        job = require_job_mode(job_id, mode)
         settings = job.get("settings") or {}
-        video_path = str(Path(__file__).resolve().parent / "outputs" / "video_jobs" / job_id / "upscaled.mp4")
+        video_name = "edited.mp4" if mode == "edit" else "upscaled.mp4"
+        video_path = str(Path(__file__).resolve().parent / "outputs" / "video_jobs" / job_id / video_name)
         if not Path(video_path).is_file():
             video_path = None
         return (
             preview_frames(job_id), preview_frames(job_id, processed=True), video_path,
             _video_status(job, "Resume with the saved settings if this job is incomplete."),
             settings.get("long_edge", 1024), settings.get("steps", 40),
-            settings.get("seed", -1), settings.get("prompt", DEFAULT_PROMPT),
+            settings.get("seed", -1), settings.get("prompt", "" if mode == "edit" else DEFAULT_PROMPT),
             video_size_note(job_id, settings.get("long_edge", 1024)),
         )
     except Exception as exc:
         raise gr.Error(str(exc)) from exc
 
 
-def run_video_job(job_id: str, long_edge: float, steps: float, seed: float, prompt: str, progress=gr.Progress()):
+def run_video_job(job_id: str, long_edge: float, steps: float, seed: float, prompt: str, mode: str, progress=gr.Progress()):
     if not job_id:
         raise gr.Error("Extract a video or load a saved job first.")
+    try:
+        require_job_mode(job_id, mode)
+    except ValueError as exc:
+        raise gr.Error(str(exc)) from exc
     event = threading.Event()
     _pause_flags[job_id] = event
 
@@ -153,7 +159,7 @@ def run_video_job(job_id: str, long_edge: float, steps: float, seed: float, prom
             raise PauseRequested()
 
     try:
-        result = process_job(job_id, int(long_edge), int(steps), int(seed), prompt, on_progress=on_frame)
+        result = process_job(job_id, int(long_edge), int(steps), int(seed), prompt, on_progress=on_frame, expected_mode=mode)
         job = load_job(job_id)
         return preview_frames(job_id, processed=True), str(result), _video_status(job, "Video ready to preview or download.")
     except PauseRequested:
@@ -175,18 +181,85 @@ def pause_video_job(job_id: str) -> str:
     return "Pause requested. The current frame will finish and the batch will stop."
 
 
-def download_frames(job_id: str, processed: bool):
+def download_frames(job_id: str, processed: bool, mode: str):
     try:
+        require_job_mode(job_id, mode)
         return str(zip_frames(job_id, processed))
     except Exception as exc:
         raise gr.Error(str(exc)) from exc
+
+
+def video_tab(mode: str) -> None:
+    editing = mode == "edit"
+    mode_state = gr.State(mode)
+    if editing:
+        gr.Markdown(
+            "**Experimental:** Apply one edit prompt to every extracted frame, then reassemble the video. "
+            "Each frame is edited independently, so the changed element may shift or flicker. "
+            "Try a short clip at a low FPS first."
+        )
+    else:
+        gr.Markdown(
+            "Extract frames first, review them, then process the batch through Qwen. "
+            "Each frame is edited independently; details may change or flicker. "
+            "At 10 FPS, even a short clip can take a long time."
+        )
+    video_input = gr.Video(label="Source video", sources=["upload"], format=None)
+    with gr.Row():
+        fps = gr.Slider(1, 60, value=10, step=1, label="Output FPS / frames extracted per second")
+        start = gr.Number(value=0, minimum=0, label="Start time (seconds)")
+        end = gr.Number(value=None, minimum=0, label="End time (blank = full clip)")
+    extract_button = gr.Button("1. Extract frames")
+    job_id = gr.Textbox(label="Job ID (keep this to resume after restarting)")
+    load_button = gr.Button("Load saved job")
+    source_gallery = gr.Gallery(label="Source frame samples", columns=4, object_fit="contain")
+    with gr.Row():
+        long_edge = gr.Slider(256, 2048, value=1024, step=16, label="Output long edge (pixels)")
+        video_steps = gr.Slider(1, 80, value=40, step=1, label="Qwen steps per frame")
+        video_seed = gr.Number(value=-1, precision=0, label="Seed (-1 for random)")
+    size_note = gr.Markdown("Extract or load a video to see its output dimensions.")
+    video_prompt = gr.Textbox(
+        value="" if editing else DEFAULT_PROMPT,
+        label="Change to make in every frame" if editing else "Preservation prompt",
+        placeholder=EDIT_PROMPT_HINT if editing else None,
+        lines=3,
+    )
+    with gr.Row():
+        process_button = gr.Button("2. Start / resume Qwen batch", variant="primary")
+        pause_button = gr.Button("Pause after current frame")
+    result_gallery = gr.Gallery(label="Edited frame samples" if editing else "Upscaled frame samples", columns=4, object_fit="contain")
+    completed_video = gr.Video(label="Completed MP4", interactive=False)
+    video_status = gr.Markdown()
+    with gr.Row():
+        source_zip_button = gr.Button("Download source frames ZIP")
+        result_zip_button = gr.Button("Download edited frames ZIP" if editing else "Download Qwen frames ZIP")
+    source_zip = gr.File(label="Source frames ZIP", interactive=False)
+    result_zip = gr.File(label="Edited frames ZIP" if editing else "Qwen frames ZIP", interactive=False)
+    extract_button.click(
+        extract_video, [video_input, fps, start, end, long_edge, mode_state],
+        [job_id, source_gallery, result_gallery, completed_video, video_status, size_note],
+    )
+    load_button.click(
+        load_video_job, [job_id, mode_state],
+        [source_gallery, result_gallery, completed_video, video_status,
+         long_edge, video_steps, video_seed, video_prompt, size_note],
+    )
+    long_edge.change(video_size_note, [job_id, long_edge], [size_note], queue=False)
+    process_button.click(
+        run_video_job, [job_id, long_edge, video_steps, video_seed, video_prompt, mode_state],
+        [result_gallery, completed_video, video_status],
+        concurrency_limit=1, concurrency_id="gpu",
+    )
+    pause_button.click(pause_video_job, [job_id], [video_status], queue=False)
+    source_zip_button.click(lambda value, selected: download_frames(value, False, selected), [job_id, mode_state], [source_zip])
+    result_zip_button.click(lambda value, selected: download_frames(value, True, selected), [job_id, mode_state], [result_zip])
 
 
 def build_app() -> gr.Blocks:
     with gr.Blocks(title="Qwen Image 2.1 Local") as demo:
         gr.Markdown(
             "# Qwen Image 2.1 Local\n"
-            "Generate images, edit images, or upscale video frames on this PC. First use downloads about 33 GB of model files; "
+            "Generate images, edit images, upscale video, or experimentally edit a video. First use downloads about 33 GB of model files; "
             "the console shows download progress. Small size is quickest; Standard is the default for 16 GB VRAM."
         )
         with gr.Tabs():
@@ -219,55 +292,9 @@ def build_app() -> gr.Blocks:
                     concurrency_id="gpu",
                 )
             with gr.Tab("Video"):
-                gr.Markdown(
-                    "Extract frames first, review them, then process the batch through Qwen. "
-                    "Each frame is edited independently; details may change or flicker. "
-                    "At 10 FPS, even a short clip can take a long time."
-                )
-                video_input = gr.Video(label="Source video", sources=["upload"], format=None)
-                with gr.Row():
-                    fps = gr.Slider(1, 60, value=10, step=1, label="Output FPS / frames extracted per second")
-                    start = gr.Number(value=0, minimum=0, label="Start time (seconds)")
-                    end = gr.Number(value=None, minimum=0, label="End time (blank = full clip)")
-                extract_button = gr.Button("1. Extract frames")
-                job_id = gr.Textbox(label="Job ID (keep this to resume after restarting)")
-                load_button = gr.Button("Load saved job")
-                source_gallery = gr.Gallery(label="Source frame samples", columns=4, object_fit="contain")
-                with gr.Row():
-                    long_edge = gr.Slider(256, 2048, value=1024, step=16, label="Output long edge (pixels)")
-                    video_steps = gr.Slider(1, 80, value=40, step=1, label="Qwen steps per frame")
-                    video_seed = gr.Number(value=-1, precision=0, label="Seed (-1 for random)")
-                size_note = gr.Markdown("Extract or load a video to see its output dimensions.")
-                video_prompt = gr.Textbox(value=DEFAULT_PROMPT, label="Preservation prompt", lines=3)
-                with gr.Row():
-                    process_button = gr.Button("2. Start / resume Qwen batch", variant="primary")
-                    pause_button = gr.Button("Pause after current frame")
-                result_gallery = gr.Gallery(label="Upscaled frame samples", columns=4, object_fit="contain")
-                completed_video = gr.Video(label="Completed MP4", interactive=False)
-                video_status = gr.Markdown()
-                with gr.Row():
-                    source_zip_button = gr.Button("Download source frames ZIP")
-                    result_zip_button = gr.Button("Download Qwen frames ZIP")
-                source_zip = gr.File(label="Source frames ZIP", interactive=False)
-                result_zip = gr.File(label="Qwen frames ZIP", interactive=False)
-                extract_button.click(
-                    extract_video, [video_input, fps, start, end, long_edge],
-                    [job_id, source_gallery, result_gallery, completed_video, video_status, size_note],
-                )
-                load_button.click(
-                    load_video_job, [job_id],
-                    [source_gallery, result_gallery, completed_video, video_status,
-                     long_edge, video_steps, video_seed, video_prompt, size_note],
-                )
-                long_edge.change(video_size_note, [job_id, long_edge], [size_note], queue=False)
-                process_button.click(
-                    run_video_job, [job_id, long_edge, video_steps, video_seed, video_prompt],
-                    [result_gallery, completed_video, video_status],
-                    concurrency_limit=1, concurrency_id="gpu",
-                )
-                pause_button.click(pause_video_job, [job_id], [video_status], queue=False)
-                source_zip_button.click(lambda value: download_frames(value, False), [job_id], [source_zip])
-                result_zip_button.click(lambda value: download_frames(value, True), [job_id], [result_zip])
+                video_tab("upscale")
+            with gr.Tab("Video Edit (experimental)"):
+                video_tab("edit")
         gr.Markdown("Results and their settings are saved in the `outputs` folder. A random seed is shown after each run.")
     return demo
 

@@ -1,4 +1,4 @@
-"""Extract, upscale, resume, and encode local video jobs."""
+"""Extract, edit or upscale, resume, and encode local video jobs."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ DEFAULT_PROMPT = (
     "composition, camera angle, colors, lighting, and original style. Add only natural detail; "
     "do not add, remove, or move objects."
 )
+EDIT_PROMPT_HINT = "Describe one change to make in every frame, for example: Change the red car to blue."
 Progress = Callable[[int, int, float | None], None]
 
 
@@ -56,6 +57,22 @@ def load_job(job_id: str) -> dict:
     if not path.is_file():
         raise ValueError("Video job not found. Check the job ID in the outputs/video_jobs folder.")
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def job_mode(job: dict) -> str:
+    # Jobs saved before Video Edit was added have no mode field.
+    return job.get("mode", "upscale")
+
+
+def require_job_mode(job_id: str, mode: str) -> dict:
+    job = load_job(job_id)
+    if job_mode(job) != mode:
+        raise ValueError(f"This job belongs to the Video {'Edit' if job_mode(job) == 'edit' else 'Upscale'} tab.")
+    return job
+
+
+def _processed_name(job: dict) -> str:
+    return "edited" if job_mode(job) == "edit" else "upscaled"
 
 
 def _write_job(job: dict) -> None:
@@ -94,8 +111,10 @@ def model_dimensions(width: int, height: int) -> tuple[int, int]:
     return ((width + 31) // 32 * 32, (height + 31) // 32 * 32)
 
 
-def create_job(video_path: str, fps: int, start: float = 0, end: float | None = None) -> dict:
+def create_job(video_path: str, fps: int, start: float = 0, end: float | None = None, mode: str = "upscale") -> dict:
     _validate_extraction(fps, start, end)
+    if mode not in ("upscale", "edit"):
+        raise ValueError("Unknown video mode.")
     source = Path(video_path)
     if not source.is_file():
         raise ValueError("Upload a video before extracting frames.")
@@ -107,6 +126,7 @@ def create_job(video_path: str, fps: int, start: float = 0, end: float | None = 
     shutil.copy2(source, copied_source)
     job = {
         "id": job_id,
+        "mode": mode,
         "source_name": source.name,
         "source_file": copied_source.name,
         "fps": fps,
@@ -167,7 +187,7 @@ def _settings(long_edge: int, steps: int, seed: int, prompt: str, source_size: t
 
 def preview_frames(job_id: str, processed: bool = False, limit: int = 12) -> list[tuple[str, str]]:
     job = load_job(job_id)
-    directory = _job_dir(job_id) / ("upscaled_frames" if processed else "source_frames")
+    directory = _job_dir(job_id) / (f"{_processed_name(job)}_frames" if processed else "source_frames")
     frames = numbered_frames(directory)
     if not frames:
         return []
@@ -176,12 +196,13 @@ def preview_frames(job_id: str, processed: bool = False, limit: int = 12) -> lis
 
 
 def zip_frames(job_id: str, processed: bool = False) -> Path:
-    load_job(job_id)
-    directory = _job_dir(job_id) / ("upscaled_frames" if processed else "source_frames")
+    job = load_job(job_id)
+    name = f"{_processed_name(job)}_frames" if processed else "source_frames"
+    directory = _job_dir(job_id) / name
     frames = numbered_frames(directory)
     if not frames:
         raise ValueError("No frames are available for download yet.")
-    archive = _job_dir(job_id) / ("upscaled_frames.zip" if processed else "source_frames.zip")
+    archive = _job_dir(job_id) / f"{name}.zip"
     temporary = archive.with_suffix(".tmp")
     with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as bundle:
         for frame in frames:
@@ -192,14 +213,15 @@ def zip_frames(job_id: str, processed: bool = False) -> Path:
 
 def _encode(job: dict) -> Path:
     directory = _job_dir(job["id"])
-    output = directory / "upscaled.mp4"
-    partial = directory / "upscaled.partial.mp4"
+    name = _processed_name(job)
+    output = directory / f"{name}.mp4"
+    partial = directory / f"{name}.partial.mp4"
     fps = job["fps"]
     duration = job["frame_count"] / fps
     # The optional audio map also handles sources without an audio stream.
     audio_seek = ["-ss", str(job["start_seconds"])] if job["start_seconds"] else []
     _ffmpeg(
-        "-framerate", str(fps), "-start_number", "0", "-i", str(directory / "upscaled_frames" / "%06d.png"),
+        "-framerate", str(fps), "-start_number", "0", "-i", str(directory / f"{name}_frames" / "%06d.png"),
         *audio_seek, "-i", str(directory / job["source_file"]),
         "-map", "0:v:0", "-map", "1:a:0?", "-c:v", "libx264", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k", "-t", str(duration), "-movflags", "+faststart", str(partial),
@@ -208,8 +230,10 @@ def _encode(job: dict) -> Path:
     return output
 
 
-def process_job(job_id: str, long_edge: int, steps: int, seed: int, prompt: str, on_progress: Progress | None = None) -> Path:
+def process_job(job_id: str, long_edge: int, steps: int, seed: int, prompt: str, on_progress: Progress | None = None, expected_mode: str | None = None) -> Path:
     job = load_job(job_id)
+    if expected_mode is not None and job_mode(job) != expected_mode:
+        raise ValueError("This job belongs to the other video tab.")
     if job["status"] not in ("extracted", "processing", "failed", "paused", "complete"):
         raise ValueError(f"Job cannot be processed while status is {job['status']}.")
     new_settings = _settings(long_edge, steps, seed, prompt, (job["source_width"], job["source_height"]))
@@ -228,7 +252,7 @@ def process_job(job_id: str, long_edge: int, steps: int, seed: int, prompt: str,
     frames = numbered_frames(_job_dir(job_id) / "source_frames")
     if len(frames) != job["frame_count"] or any(int(frame.stem) != i for i, frame in enumerate(frames)):
         raise RuntimeError("Source frame sequence is incomplete.")
-    destination = _job_dir(job_id) / "upscaled_frames"
+    destination = _job_dir(job_id) / f"{_processed_name(job)}_frames"
     destination.mkdir(exist_ok=True)
     job["status"] = "processing"
     job.pop("error", None)
@@ -239,7 +263,13 @@ def process_job(job_id: str, long_edge: int, steps: int, seed: int, prompt: str,
         for i, source in enumerate(frames):
             target = destination / source.name
             if not _valid_frame(target, size):
-                request = Request("edit", settings["prompt"], "source", "video", settings["steps"], settings["seed"], False, (source,), *inference_size)
+                prompt_text = settings["prompt"]
+                if job_mode(job) == "edit":
+                    prompt_text = (
+                        f"Edit this video frame with one targeted change: {prompt_text} "
+                        "Keep all other elements unchanged. Preserve the original composition and camera angle."
+                    )
+                request = Request("edit", prompt_text, "source", "video", settings["steps"], settings["seed"], False, (source,), *inference_size)
                 generated = infer(request)
                 if generated.size != inference_size:
                     raise RuntimeError(f"Qwen returned {generated.size} for frame {i + 1}; expected {inference_size}.")

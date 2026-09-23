@@ -28,6 +28,7 @@ ASPECTS: dict[str, tuple[int, int]] = {
 QUALITY_PIXELS = {
     "Small (512×512)": 512**2,
     "Standard (~1 MP)": 1024**2,
+    "1.5 MP": 1_500_000,
     "2K (high memory)": 2048**2,
 }
 MAX_REFERENCES = 10
@@ -52,7 +53,7 @@ def dimensions(aspect: str, quality: str) -> tuple[int, int]:
     if aspect not in ASPECTS:
         raise ValueError("Choose a supported aspect ratio.")
     if quality not in QUALITY_PIXELS:
-        raise ValueError("Choose Small, Standard, or 2K size.")
+        raise ValueError("Choose Small, Standard, 1.5 MP, or 2K size.")
     x, y = ASPECTS[aspect]
     area = QUALITY_PIXELS[quality]
     factor = math.sqrt(area / (x * y))

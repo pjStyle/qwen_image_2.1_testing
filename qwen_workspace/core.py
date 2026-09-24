@@ -25,6 +25,7 @@ ASPECTS: dict[str, tuple[int, int]] = {
     "16:9": (16, 9),
     "9:16": (9, 16),
 }
+ORIGINAL_ASPECT = "Original image"
 QUALITY_PIXELS = {
     "Small (512×512)": 512**2,
     "Standard (~1 MP)": 1024**2,
@@ -52,13 +53,25 @@ class Request:
 def dimensions(aspect: str, quality: str) -> tuple[int, int]:
     if aspect not in ASPECTS:
         raise ValueError("Choose a supported aspect ratio.")
+    return dimensions_for_ratio(*ASPECTS[aspect], quality)
+
+
+def dimensions_for_ratio(x: int, y: int, quality: str) -> tuple[int, int]:
     if quality not in QUALITY_PIXELS:
         raise ValueError("Choose Small, Standard, 1.5 MP, or 2K size.")
-    x, y = ASPECTS[aspect]
     area = QUALITY_PIXELS[quality]
     factor = math.sqrt(area / (x * y))
     # The model's VAE needs dimensions divisible by 16.
     return max(256, round(x * factor / 16) * 16), max(256, round(y * factor / 16) * 16)
+
+
+def original_dimensions(x: int, y: int, quality: str) -> tuple[int, int]:
+    if quality not in QUALITY_PIXELS:
+        raise ValueError("Choose Small, Standard, 1.5 MP, or 2K size.")
+    factor = max(math.sqrt(QUALITY_PIXELS[quality] / (x * y)), 256 / min(x, y))
+    width = round(x * factor)
+    height = round(width * y / x)
+    return width, height
 
 
 def validate_request(
@@ -89,6 +102,7 @@ def validate_request(
         raise ValueError("Reference images belong in Edit.")
     if mode == "edit" and not 1 <= len(paths) <= MAX_REFERENCES:
         raise ValueError("Upload 1 to 10 reference images for Edit.")
+    original_size = None
     for path in paths:
         try:
             with Image.open(path) as image:
@@ -96,9 +110,16 @@ def validate_request(
             with Image.open(path) as image:
                 if image.width * image.height > MAX_INPUT_PIXELS:
                     raise ValueError(f"{path.name} is too large; limit is 32 million pixels.")
+                if original_size is None:
+                    original_size = image.size
         except (FileNotFoundError, UnidentifiedImageError, OSError) as exc:
             raise ValueError(f"Could not read image {path.name}.") from exc
-    width, height = dimensions(aspect, quality)
+    if aspect == ORIGINAL_ASPECT:
+        if mode != "edit" or original_size is None:
+            raise ValueError("Original image aspect ratio requires an Edit reference image.")
+        width, height = original_dimensions(*original_size, quality)
+    else:
+        width, height = dimensions(aspect, quality)
     return Request(mode, prompt, aspect, quality, steps, seed, bool(transparent), paths, width, height)
 
 

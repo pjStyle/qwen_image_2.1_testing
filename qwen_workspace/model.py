@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from .core import MODEL_ID, ROOT, Request, prepared_prompt
+from .core import MODEL_ID, ORIGINAL_ASPECT, ROOT, Request, prepared_prompt
 
 log = logging.getLogger(__name__)
 _pipeline = None
@@ -47,14 +47,21 @@ def infer(request: Request) -> Image.Image:
     for path in request.references:
         with Image.open(path) as source:
             images.append(source.convert("RGBA" if source.mode == "RGBA" else "RGB"))
+    model_width, model_height = request.width, request.height
+    if request.aspect == ORIGINAL_ASPECT:
+        model_width = (model_width + 15) // 16 * 16
+        model_height = (model_height + 15) // 16 * 16
     kwargs = {
         "prompt": prepared_prompt(request),
-        "width": request.width,
-        "height": request.height,
+        "width": model_width,
+        "height": model_height,
         "num_inference_steps": request.steps,
         "generator": torch.Generator(device="cuda").manual_seed(request.seed),
     }
     if images:
         kwargs["image"] = images
     with torch.inference_mode():
-        return pipe(**kwargs).images[0]
+        result = pipe(**kwargs).images[0]
+    if request.aspect == ORIGINAL_ASPECT and result.size != (request.width, request.height):
+        result = result.resize((request.width, request.height), Image.Resampling.LANCZOS)
+    return result

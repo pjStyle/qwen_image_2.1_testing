@@ -9,7 +9,7 @@ from pathlib import Path
 
 import gradio as gr
 
-from qwen_workspace.core import ASPECTS, QUALITY_PIXELS, save_result, validate_request
+from qwen_workspace.core import ASPECTS, ORIGINAL_ASPECT, QUALITY_PIXELS, save_result, validate_request
 from qwen_workspace.model import infer
 from qwen_workspace.video import (
     DEFAULT_PROMPT, EDIT_PROMPT_HINT, PauseRequested, create_job, job_mode, load_job,
@@ -65,7 +65,12 @@ def run(
 
 def controls(prefix: str):
     with gr.Row():
-        aspect = gr.Dropdown(choices=list(ASPECTS), value="1:1", label="Aspect ratio")
+        editing = prefix == "edit"
+        aspect = gr.Dropdown(
+            choices=([ORIGINAL_ASPECT] if editing else []) + list(ASPECTS),
+            value=ORIGINAL_ASPECT if editing else "1:1",
+            label="Aspect ratio",
+        )
         quality = gr.Dropdown(
             choices=list(QUALITY_PIXELS),
             value="Standard (~1 MP)",

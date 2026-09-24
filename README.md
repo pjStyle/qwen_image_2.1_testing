@@ -26,6 +26,8 @@ The first Generate, Edit, or Video batch downloads the official BF16 checkpoint 
 
 Use **Small (512×512)** for quicker tests. Other aspect ratios use roughly the same pixel count at the selected shape. **Standard (~1 MP)** remains the default. **1.5 MP** offers more detail with higher memory use. **2K** is experimental on 16 GB and may exhaust GPU memory, particularly with several references. A seed of `-1` chooses a random seed; the chosen value is shown with the result. The transparency checkbox adds the model's recommended RGBA wording to the prompt. Actual alpha content depends on model output.
 
+In **Edit**, the default **Original image** aspect ratio follows the first uploaded reference. The selected size controls the approximate pixel count, and the saved result uses that reference's shape. Choose a named aspect ratio to override it. **Generate** still defaults to 1:1.
+
 Each result is saved as a PNG in `outputs/`, beside a JSON file with its prompt, effective prompt, settings, seed, and reference filenames. Input images are read from Gradio's temporary upload paths and are not copied into `outputs/`. Only one request runs at a time.
 
 ## Video frames

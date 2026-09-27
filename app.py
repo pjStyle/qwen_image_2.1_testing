@@ -31,11 +31,14 @@ def run(
     steps: float,
     seed: float,
     transparent: bool,
+    true_cfg_scale: float = 1.0,
+    negative_prompt: str = "",
     progress=gr.Progress(),
 ):
     try:
         request = validate_request(
-            mode, prompt, aspect, quality, int(steps), int(seed), transparent, references
+            mode, prompt, aspect, quality, int(steps), int(seed), transparent, references,
+            true_cfg_scale, negative_prompt,
         )
     except (TypeError, ValueError) as exc:
         raise gr.Error(str(exc)) from exc
@@ -80,9 +83,20 @@ def controls(prefix: str):
         steps = gr.Slider(1, 80, value=40, step=1, label="Steps")
         seed = gr.Number(value=-1, precision=0, label="Seed (-1 for random)")
     transparent = gr.Checkbox(label="Request transparent background (RGBA)")
+    with gr.Accordion("Advanced guidance", open=False):
+        gr.Markdown(
+            "Qwen Image 2.1 defaults to CFG 1.0 (no guidance). Set CFG above 1.0 to strengthen prompt "
+            "adherence; negative prompts only take effect above 1.0. Guidance also increases processing time."
+        )
+        true_cfg_scale = gr.Slider(1.0, 10.0, value=1.0, step=0.1, label="CFG scale")
+        negative_prompt = gr.Textbox(
+            label="Negative prompt",
+            lines=3,
+            placeholder="Optional: describe what the result should avoid",
+        )
     output = gr.Image(type="filepath", label="Result", interactive=False)
     status = gr.Markdown()
-    return aspect, quality, steps, seed, transparent, output, status
+    return aspect, quality, steps, seed, transparent, true_cfg_scale, negative_prompt, output, status
 
 
 def _video_status(job: dict, extra: str = "") -> str:
@@ -270,11 +284,14 @@ def build_app() -> gr.Blocks:
         with gr.Tabs():
             with gr.Tab("Generate"):
                 prompt = gr.Textbox(label="Prompt", lines=4, placeholder="Describe the image to create")
-                aspect, quality, steps, seed, transparent, output, status = controls("generate")
+                aspect, quality, steps, seed, transparent, cfg, negative_prompt, output, status = controls("generate")
                 button = gr.Button("Generate image", variant="primary")
                 button.click(
                     run,
-                    inputs=[gr.State("generate"), prompt, gr.State(None), aspect, quality, steps, seed, transparent],
+                    inputs=[
+                        gr.State("generate"), prompt, gr.State(None), aspect, quality, steps, seed,
+                        transparent, cfg, negative_prompt,
+                    ],
                     outputs=[output, status],
                     concurrency_limit=1,
                     concurrency_id="gpu",
@@ -287,11 +304,17 @@ def build_app() -> gr.Blocks:
                     file_types=[".png", ".jpg", ".jpeg", ".webp", ".bmp"],
                     type="filepath",
                 )
-                e_aspect, e_quality, e_steps, e_seed, e_transparent, e_output, e_status = controls("edit")
+                (
+                    e_aspect, e_quality, e_steps, e_seed, e_transparent, e_cfg, e_negative_prompt,
+                    e_output, e_status,
+                ) = controls("edit")
                 edit_button = gr.Button("Edit image", variant="primary")
                 edit_button.click(
                     run,
-                    inputs=[gr.State("edit"), edit_prompt, references, e_aspect, e_quality, e_steps, e_seed, e_transparent],
+                    inputs=[
+                        gr.State("edit"), edit_prompt, references, e_aspect, e_quality, e_steps,
+                        e_seed, e_transparent, e_cfg, e_negative_prompt,
+                    ],
                     outputs=[e_output, e_status],
                     concurrency_limit=1,
                     concurrency_id="gpu",

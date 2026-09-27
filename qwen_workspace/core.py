@@ -48,6 +48,8 @@ class Request:
     references: tuple[Path, ...]
     width: int
     height: int
+    true_cfg_scale: float = 1.0
+    negative_prompt: str = ""
 
 
 def dimensions(aspect: str, quality: str) -> tuple[int, int]:
@@ -83,6 +85,8 @@ def validate_request(
     seed: int | None,
     transparent: bool,
     references: list[str] | None = None,
+    true_cfg_scale: float = 1.0,
+    negative_prompt: str = "",
 ) -> Request:
     if mode not in ("generate", "edit"):
         raise ValueError("Unknown mode.")
@@ -91,6 +95,18 @@ def validate_request(
         raise ValueError("Enter a prompt before starting.")
     if len(prompt) > 4000:
         raise ValueError("Keep the prompt under 4,000 characters.")
+    if isinstance(true_cfg_scale, bool) or not isinstance(true_cfg_scale, (int, float)):
+        raise ValueError("CFG scale must be a number from 1.0 to 10.0.")
+    true_cfg_scale = float(true_cfg_scale)
+    if not math.isfinite(true_cfg_scale) or not 1.0 <= true_cfg_scale <= 10.0:
+        raise ValueError("CFG scale must be from 1.0 to 10.0.")
+    if negative_prompt is None:
+        negative_prompt = ""
+    if not isinstance(negative_prompt, str):
+        raise ValueError("Negative prompt must be text.")
+    negative_prompt = negative_prompt.strip()
+    if len(negative_prompt) > 4000:
+        raise ValueError("Keep the negative prompt under 4,000 characters.")
     if not isinstance(steps, int) or not 1 <= steps <= 80:
         raise ValueError("Steps must be between 1 and 80.")
     if seed is None or seed == -1:
@@ -120,7 +136,10 @@ def validate_request(
         width, height = original_dimensions(*original_size, quality)
     else:
         width, height = dimensions(aspect, quality)
-    return Request(mode, prompt, aspect, quality, steps, seed, bool(transparent), paths, width, height)
+    return Request(
+        mode, prompt, aspect, quality, steps, seed, bool(transparent), paths, width, height,
+        true_cfg_scale, negative_prompt,
+    )
 
 
 def prepared_prompt(request: Request) -> str:
@@ -147,6 +166,8 @@ def save_result(image: Image.Image, request: Request, output_dir: Path = OUTPUT_
         "height": request.height,
         "steps": request.steps,
         "seed": request.seed,
+        "true_cfg_scale": request.true_cfg_scale,
+        "negative_prompt": request.negative_prompt,
         "transparent_requested": request.transparent,
         "image_mode": image.mode,
         "reference_images": [path.name for path in request.references],

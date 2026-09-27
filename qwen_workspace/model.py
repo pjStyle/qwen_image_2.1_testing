@@ -57,7 +57,11 @@ def infer(request: Request) -> Image.Image:
         "height": model_height,
         "num_inference_steps": request.steps,
         "generator": torch.Generator(device="cuda").manual_seed(request.seed),
+        "true_cfg_scale": request.true_cfg_scale,
     }
+    if request.true_cfg_scale > 1.0:
+        # An empty string deliberately enables CFG against an unconditional prompt.
+        kwargs["negative_prompt"] = request.negative_prompt
     if images:
         kwargs["image"] = images
     with torch.inference_mode():

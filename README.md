@@ -40,6 +40,8 @@ Each result is saved as a PNG in `outputs/`, beside a JSON file with its prompt,
 
 When all frames are ready, the app saves an H.264 MP4 with source audio when present. The Video tab previews representative source and Qwen frames, plays the result, and offers ZIP downloads of either frame set. All source files, frames, and output videos remain in the job folder until you delete that folder. Qwen may reinterpret details or create flicker between independently processed frames, even with the preservation prompt.
 
+For performance debugging, each processed frame adds a timing record to `outputs/video_jobs/<job-id>/timings.jsonl` and a summary to the console. The record includes the time between frames, pipeline loading, input preparation, time to the first model step, total model execution, frame preparation, PNG saving, and total frame time. The first-step time includes prompt encoding and the first denoising step.
+
 ## Experimental video edit
 
 Open **Video Edit (experimental)**, upload a clip, and extract frames as above. Enter one change to apply to every frame, such as “Change the red car to blue.” The app asks Qwen to preserve everything else, but each frame is edited independently, so the change may vary or flicker. Try a short clip at a low FPS first. This tab has its own saved jobs, pause/resume flow, edited frame ZIP, and completed MP4 with source audio. Its results are stored in `outputs/video_jobs/<job-id>/edited_frames/` and `edited.mp4`.

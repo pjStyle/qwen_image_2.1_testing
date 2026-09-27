@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 from PIL import Image
@@ -39,10 +40,13 @@ def get_pipeline():
     return pipe
 
 
-def infer(request: Request) -> Image.Image:
+def infer(request: Request, timings: dict[str, float] | None = None) -> Image.Image:
     import torch
 
+    started = time.perf_counter()
     pipe = get_pipeline()
+    if timings is not None:
+        timings["pipeline_load_seconds"] = time.perf_counter() - started
     images = []
     for path in request.references:
         with Image.open(path) as source:
@@ -64,8 +68,23 @@ def infer(request: Request) -> Image.Image:
         kwargs["negative_prompt"] = request.negative_prompt
     if images:
         kwargs["image"] = images
+    pipeline_start = time.perf_counter()
+    if timings is not None:
+        timings["input_prepare_seconds"] = pipeline_start - started - timings["pipeline_load_seconds"]
+
+        def on_step_end(_pipe, step, _timestep, callback_kwargs):
+            if step == 0:
+                timings["first_step_seconds"] = time.perf_counter() - pipeline_start
+            return callback_kwargs
+
+        kwargs["callback_on_step_end"] = on_step_end
     with torch.inference_mode():
         result = pipe(**kwargs).images[0]
+    pipeline_end = time.perf_counter()
+    if timings is not None:
+        timings["pipeline_seconds"] = pipeline_end - pipeline_start
     if request.aspect == ORIGINAL_ASPECT and result.size != (request.width, request.height):
         result = result.resize((request.width, request.height), Image.Resampling.LANCZOS)
+    if timings is not None:
+        timings["output_resize_seconds"] = time.perf_counter() - pipeline_end
     return result

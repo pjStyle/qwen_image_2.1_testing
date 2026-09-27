@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import secrets
 import shutil
@@ -22,6 +23,7 @@ from .model import infer
 
 
 JOBS_DIR = OUTPUT_DIR / "video_jobs"
+log = logging.getLogger(__name__)
 DEFAULT_PROMPT = (
     "Upscale and refine this video frame. Preserve the exact subjects, identities, "
     "composition, camera angle, colors, lighting, and original style. Add only natural detail; "
@@ -267,6 +269,27 @@ def _encode(job: dict) -> Path:
     return output
 
 
+def _record_frame_timing(job_id: str, frame_number: int, timings: dict[str, float]) -> None:
+    entry = {"frame": frame_number, "recorded_at": datetime.now(timezone.utc).isoformat(),
+             **{key: round(value, 3) for key, value in timings.items()}}
+    try:
+        with (_job_dir(job_id) / "timings.jsonl").open("a", encoding="utf-8") as output:
+            output.write(json.dumps(entry) + "\n")
+    except OSError:
+        log.warning("Could not save timing for job %s frame %d", job_id, frame_number, exc_info=True)
+    log.info(
+        "Job %s frame %d timing: between %.2fs, load %.2fs, input %.2fs, "
+        "to first step %.2fs, remaining model %.2fs, frame prep %.2fs, "
+        "PNG save %.2fs, total %.2fs",
+        job_id, frame_number, timings.get("between_frames_seconds", 0),
+        timings.get("pipeline_load_seconds", 0), timings.get("input_prepare_seconds", 0),
+        timings.get("first_step_seconds", 0),
+        timings.get("pipeline_seconds", 0) - timings.get("first_step_seconds", 0),
+        timings["frame_prepare_seconds"], timings["png_save_seconds"],
+        timings["frame_total_seconds"],
+    )
+
+
 def process_job(job_id: str, long_edge: int | None, steps: int, seed: int, prompt: str,
                 on_progress: Progress | None = None, expected_mode: str | None = None,
                 aspect: str = ORIGINAL_ASPECT, quality: str = ORIGINAL_SIZE,
@@ -305,10 +328,16 @@ def process_job(job_id: str, long_edge: int | None, steps: int, seed: int, promp
     _write_job(job)
     started = time.monotonic()
     processed_now = 0
+    previous_frame_finished = None
     try:
         for i, source in enumerate(frames):
+            frame_started = time.perf_counter()
             target = destination / source.name
-            if not _valid_frame(target, size):
+            processed_frame = not _valid_frame(target, size)
+            if processed_frame:
+                timings: dict[str, float] = {}
+                if previous_frame_finished is not None:
+                    timings["between_frames_seconds"] = frame_started - previous_frame_finished
                 prompt_text = settings["prompt"]
                 if job_mode(job) == "edit":
                     prompt_text = (
@@ -321,7 +350,9 @@ def process_job(job_id: str, long_edge: int | None, steps: int, seed: int, promp
                     settings.get("transparent", False), (source,), *inference_size,
                     settings.get("true_cfg_scale", 1.0), settings.get("negative_prompt", ""),
                 )
-                generated = infer(request)
+                log.info("Job %s frame %d/%d: starting model inference", job_id, i + 1, len(frames))
+                generated = infer(request, timings)
+                inference_finished = time.perf_counter()
                 if generated.size != inference_size:
                     raise RuntimeError(f"Qwen returned {generated.size} for frame {i + 1}; expected {inference_size}.")
                 if generated.size != size:
@@ -335,12 +366,20 @@ def process_job(job_id: str, long_edge: int | None, steps: int, seed: int, promp
                         frame.paste(generated.convert("RGBA"), mask=generated.getchannel("A"))
                     else:
                         frame.paste(generated.convert("RGB"))
+                save_started = time.perf_counter()
                 temporary = target.with_suffix(".tmp.png")
                 frame.save(temporary, "PNG")
                 temporary.replace(target)
+                save_finished = time.perf_counter()
+                timings["frame_prepare_seconds"] = save_started - inference_finished
+                timings["png_save_seconds"] = save_finished - save_started
                 processed_now += 1
             job["completed_frames"] = i + 1
             _write_job(job)
+            if processed_frame:
+                timings["frame_total_seconds"] = time.perf_counter() - frame_started
+                _record_frame_timing(job_id, i + 1, timings)
+            previous_frame_finished = time.perf_counter()
             elapsed = time.monotonic() - started
             remaining = ((elapsed / processed_now) * (len(frames) - i - 1)) if processed_now else None
             if on_progress:

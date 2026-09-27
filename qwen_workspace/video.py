@@ -198,7 +198,7 @@ def frame_dimensions(source_size: tuple[int, int], aspect: str, quality: str) ->
 
 def _frame_settings(steps: int, seed: int, prompt: str, source_size: tuple[int, int],
                     aspect: str, quality: str, transparent: bool, true_cfg_scale: float,
-                    negative_prompt: str) -> dict:
+                    negative_prompt: str | None) -> dict:
     width, height = frame_dimensions(source_size, aspect, quality)
     if not isinstance(steps, int) or not 1 <= steps <= 80:
         raise ValueError("Steps must be from 1 to 80.")
@@ -211,6 +211,8 @@ def _frame_settings(steps: int, seed: int, prompt: str, source_size: tuple[int, 
         raise ValueError("Seed must be -1 or from 0 to 4,294,967,295.")
     if isinstance(true_cfg_scale, bool) or not isinstance(true_cfg_scale, (int, float)) or not 1 <= true_cfg_scale <= 10:
         raise ValueError("CFG scale must be from 1.0 to 10.0.")
+    if negative_prompt is None:
+        negative_prompt = ""
     if not isinstance(negative_prompt, str) or len(negative_prompt.strip()) > 4000:
         raise ValueError("Keep the negative prompt under 4,000 characters.")
     return {
@@ -269,7 +271,7 @@ def process_job(job_id: str, long_edge: int | None, steps: int, seed: int, promp
                 on_progress: Progress | None = None, expected_mode: str | None = None,
                 aspect: str = ORIGINAL_ASPECT, quality: str = ORIGINAL_SIZE,
                 transparent: bool = False, true_cfg_scale: float = 1.0,
-                negative_prompt: str = "") -> Path:
+                negative_prompt: str | None = "") -> Path:
     job = load_job(job_id)
     if expected_mode is not None and job_mode(job) != expected_mode:
         raise ValueError("This job belongs to the other video tab.")

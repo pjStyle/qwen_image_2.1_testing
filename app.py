@@ -13,7 +13,7 @@ from qwen_workspace.core import ASPECTS, ORIGINAL_ASPECT, ORIGINAL_SIZE, QUALITY
 from qwen_workspace.model import infer
 from qwen_workspace.video import (
     DEFAULT_PROMPT, EDIT_PROMPT_HINT, PauseRequested, create_job, job_mode, load_job,
-    preview_frames, process_job, require_job_mode, target_dimensions, zip_frames,
+    frame_dimensions, preview_frames, process_job, require_job_mode, target_dimensions, zip_frames,
 )
 
 
@@ -128,20 +128,22 @@ def _video_status(job: dict, extra: str = "") -> str:
     return message
 
 
-def video_size_note(job_id: str, long_edge: float) -> str:
+def video_size_note(job_id: str, aspect: str, quality: str, legacy_long_edge: int | None = None) -> str:
     if not job_id:
         return "Extract or load a video to see its output dimensions."
     try:
         job = load_job(job_id)
-        width, height = target_dimensions(job["source_width"], job["source_height"], int(long_edge))
         source = (job["source_width"], job["source_height"])
-        relation = "downscaling" if int(long_edge) < max(source) else "upscaling" if int(long_edge) > max(source) else "same long edge"
-        return f"Output: **{width}×{height}** from {source[0]}×{source[1]} ({relation})."
+        width, height = (target_dimensions(*source, legacy_long_edge) if legacy_long_edge is not None
+                         else frame_dimensions(source, aspect, quality))
+        legacy = " (saved long-edge setting)" if legacy_long_edge is not None else ""
+        return f"Output: **{width}×{height}** from {source[0]}×{source[1]}{legacy}."
     except (ValueError, KeyError):
         return "Extract or load a valid video job to see its output dimensions."
 
 
-def extract_video(video_path: str | None, fps: float, start: float, end: float | None, long_edge: float, mode: str, progress=gr.Progress()):
+def extract_video(video_path: str | None, fps: float, start: float, end: float | None,
+                  aspect: str, quality: str, mode: str, progress=gr.Progress()):
     if not video_path:
         raise gr.Error("Upload a video first.")
     progress(0, desc="Copying video and extracting frames")
@@ -153,7 +155,7 @@ def extract_video(video_path: str | None, fps: float, start: float, end: float |
     progress(1, desc="Frames ready")
     return job["id"], preview_frames(job["id"]), [], None, _video_status(
         job, "Review the source frames, then set Qwen options and start the batch."
-    ), video_size_note(job["id"], long_edge)
+    ), video_size_note(job["id"], aspect, quality), None
 
 
 def load_video_job(job_id: str, mode: str):
@@ -167,15 +169,22 @@ def load_video_job(job_id: str, mode: str):
         return (
             preview_frames(job_id), preview_frames(job_id, processed=True), video_path,
             _video_status(job, "Resume with the saved settings if this job is incomplete."),
-            settings.get("long_edge", 1024), settings.get("steps", 40),
+            settings.get("aspect", ORIGINAL_ASPECT), settings.get("quality", ORIGINAL_SIZE),
+            settings.get("steps", 40),
             settings.get("seed", -1), settings.get("prompt", "" if mode == "edit" else DEFAULT_PROMPT),
-            video_size_note(job_id, settings.get("long_edge", 1024)),
+            settings.get("transparent", False), settings.get("true_cfg_scale", 1.0),
+            settings.get("negative_prompt", ""),
+            video_size_note(job_id, settings.get("aspect", ORIGINAL_ASPECT),
+                            settings.get("quality", ORIGINAL_SIZE), settings.get("long_edge")),
+            settings.get("long_edge"),
         )
     except Exception as exc:
         raise gr.Error(str(exc)) from exc
 
 
-def run_video_job(job_id: str, long_edge: float, steps: float, seed: float, prompt: str, mode: str, progress=gr.Progress()):
+def run_video_job(job_id: str, aspect: str, quality: str, steps: float, seed: float,
+                  prompt: str, transparent: bool, true_cfg_scale: float, negative_prompt: str,
+                  legacy_long_edge: int | None, mode: str, progress=gr.Progress()):
     if not job_id:
         raise gr.Error("Extract a video or load a saved job first.")
     try:
@@ -192,7 +201,12 @@ def run_video_job(job_id: str, long_edge: float, steps: float, seed: float, prom
             raise PauseRequested()
 
     try:
-        result = process_job(job_id, int(long_edge), int(steps), int(seed), prompt, on_progress=on_frame, expected_mode=mode)
+        result = process_job(
+            job_id, legacy_long_edge, int(steps), int(seed), prompt,
+            on_progress=on_frame, expected_mode=mode, aspect=aspect, quality=quality,
+            transparent=transparent, true_cfg_scale=true_cfg_scale,
+            negative_prompt=negative_prompt,
+        )
         job = load_job(job_id)
         return preview_frames(job_id, processed=True), str(result), _video_status(job, "Video ready to preview or download.")
     except PauseRequested:
@@ -247,9 +261,29 @@ def video_tab(mode: str) -> None:
     load_button = gr.Button("Load saved job")
     source_gallery = gr.Gallery(label="Source frame samples", columns=4, object_fit="contain")
     with gr.Row():
-        long_edge = gr.Slider(256, 2048, value=1024, step=16, label="Output long edge (pixels)")
+        aspect = gr.Dropdown([ORIGINAL_ASPECT, *ASPECTS], value=ORIGINAL_ASPECT, label="Output frame aspect ratio")
+        quality = gr.Dropdown([ORIGINAL_SIZE, *QUALITY_PIXELS], value=ORIGINAL_SIZE, label="Output frame size")
+    aspect.change(
+        lambda selected_aspect, selected_quality: (
+            "Standard (~1 MP)" if selected_aspect != ORIGINAL_ASPECT and selected_quality == ORIGINAL_SIZE
+            else selected_quality
+        ), [aspect, quality], [quality], queue=False,
+    )
+    quality.change(
+        lambda selected_quality, selected_aspect: (
+            ORIGINAL_ASPECT if selected_quality == ORIGINAL_SIZE else selected_aspect
+        ), [quality, aspect], [aspect], queue=False,
+    )
+    with gr.Row():
         video_steps = gr.Slider(1, 80, value=40, step=1, label="Qwen steps per frame")
         video_seed = gr.Number(value=-1, precision=0, label="Seed (-1 for random)")
+    transparent = gr.Checkbox(label="Request transparent output frames (RGBA)")
+    with gr.Accordion("Advanced guidance", open=False):
+        gr.Markdown("CFG defaults to 1.0. Negative prompts take effect only above 1.0.")
+        cfg = gr.Slider(1.0, 10.0, value=1.0, step=0.1, label="CFG scale")
+        negative_prompt = gr.Textbox(label="Negative prompt", lines=3,
+                                     placeholder="Optional: describe what the result should avoid")
+    legacy_long_edge = gr.State(None)
     size_note = gr.Markdown("Extract or load a video to see its output dimensions.")
     video_prompt = gr.Textbox(
         value="" if editing else DEFAULT_PROMPT,
@@ -269,17 +303,20 @@ def video_tab(mode: str) -> None:
     source_zip = gr.File(label="Source frames ZIP", interactive=False)
     result_zip = gr.File(label="Edited frames ZIP" if editing else "Qwen frames ZIP", interactive=False)
     extract_button.click(
-        extract_video, [video_input, fps, start, end, long_edge, mode_state],
-        [job_id, source_gallery, result_gallery, completed_video, video_status, size_note],
+        extract_video, [video_input, fps, start, end, aspect, quality, mode_state],
+        [job_id, source_gallery, result_gallery, completed_video, video_status, size_note, legacy_long_edge],
     )
     load_button.click(
         load_video_job, [job_id, mode_state],
         [source_gallery, result_gallery, completed_video, video_status,
-         long_edge, video_steps, video_seed, video_prompt, size_note],
+         aspect, quality, video_steps, video_seed, video_prompt, transparent, cfg,
+         negative_prompt, size_note, legacy_long_edge],
     )
-    long_edge.change(video_size_note, [job_id, long_edge], [size_note], queue=False)
+    aspect.change(video_size_note, [job_id, aspect, quality, legacy_long_edge], [size_note], queue=False)
+    quality.change(video_size_note, [job_id, aspect, quality, legacy_long_edge], [size_note], queue=False)
     process_button.click(
-        run_video_job, [job_id, long_edge, video_steps, video_seed, video_prompt, mode_state],
+        run_video_job, [job_id, aspect, quality, video_steps, video_seed, video_prompt,
+                        transparent, cfg, negative_prompt, legacy_long_edge, mode_state],
         [result_gallery, completed_video, video_status],
         concurrency_limit=1, concurrency_id="gpu",
     )

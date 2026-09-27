@@ -16,7 +16,8 @@ from typing import Callable
 import imageio_ffmpeg
 from PIL import Image, UnidentifiedImageError
 
-from .core import OUTPUT_DIR, Request
+from .core import (ASPECTS, ORIGINAL_ASPECT, ORIGINAL_SIZE, OUTPUT_DIR,
+                   Request, dimensions, original_dimensions)
 from .model import infer
 
 
@@ -185,6 +186,40 @@ def _settings(long_edge: int, steps: int, seed: int, prompt: str, source_size: t
     return {"long_edge": long_edge, "width": width, "height": height, "steps": steps, "seed": seed, "prompt": prompt}
 
 
+def frame_dimensions(source_size: tuple[int, int], aspect: str, quality: str) -> tuple[int, int]:
+    if aspect == ORIGINAL_ASPECT:
+        if quality == ORIGINAL_SIZE:
+            return source_size
+        return original_dimensions(*source_size, quality)
+    if aspect not in ASPECTS or quality == ORIGINAL_SIZE:
+        raise ValueError("Choose a supported aspect ratio and size.")
+    return dimensions(aspect, quality)
+
+
+def _frame_settings(steps: int, seed: int, prompt: str, source_size: tuple[int, int],
+                    aspect: str, quality: str, transparent: bool, true_cfg_scale: float,
+                    negative_prompt: str) -> dict:
+    width, height = frame_dimensions(source_size, aspect, quality)
+    if not isinstance(steps, int) or not 1 <= steps <= 80:
+        raise ValueError("Steps must be from 1 to 80.")
+    prompt = (prompt or "").strip()
+    if not prompt or len(prompt) > 4000:
+        raise ValueError("Enter a prompt of up to 4,000 characters.")
+    if seed == -1:
+        seed = secrets.randbelow(2**32)
+    if not isinstance(seed, int) or not 0 <= seed < 2**32:
+        raise ValueError("Seed must be -1 or from 0 to 4,294,967,295.")
+    if isinstance(true_cfg_scale, bool) or not isinstance(true_cfg_scale, (int, float)) or not 1 <= true_cfg_scale <= 10:
+        raise ValueError("CFG scale must be from 1.0 to 10.0.")
+    if not isinstance(negative_prompt, str) or len(negative_prompt.strip()) > 4000:
+        raise ValueError("Keep the negative prompt under 4,000 characters.")
+    return {
+        "aspect": aspect, "quality": quality, "width": width, "height": height,
+        "steps": steps, "seed": seed, "prompt": prompt, "transparent": bool(transparent),
+        "true_cfg_scale": float(true_cfg_scale), "negative_prompt": negative_prompt.strip(),
+    }
+
+
 def preview_frames(job_id: str, processed: bool = False, limit: int = 12) -> list[tuple[str, str]]:
     job = load_job(job_id)
     directory = _job_dir(job_id) / (f"{_processed_name(job)}_frames" if processed else "source_frames")
@@ -230,13 +265,22 @@ def _encode(job: dict) -> Path:
     return output
 
 
-def process_job(job_id: str, long_edge: int, steps: int, seed: int, prompt: str, on_progress: Progress | None = None, expected_mode: str | None = None) -> Path:
+def process_job(job_id: str, long_edge: int | None, steps: int, seed: int, prompt: str,
+                on_progress: Progress | None = None, expected_mode: str | None = None,
+                aspect: str = ORIGINAL_ASPECT, quality: str = ORIGINAL_SIZE,
+                transparent: bool = False, true_cfg_scale: float = 1.0,
+                negative_prompt: str = "") -> Path:
     job = load_job(job_id)
     if expected_mode is not None and job_mode(job) != expected_mode:
         raise ValueError("This job belongs to the other video tab.")
     if job["status"] not in ("extracted", "processing", "failed", "paused", "complete"):
         raise ValueError(f"Job cannot be processed while status is {job['status']}.")
-    new_settings = _settings(long_edge, steps, seed, prompt, (job["source_width"], job["source_height"]))
+    source_size = (job["source_width"], job["source_height"])
+    new_settings = (
+        _settings(long_edge, steps, seed, prompt, source_size) if long_edge is not None else
+        _frame_settings(steps, seed, prompt, source_size, aspect, quality, transparent,
+                        true_cfg_scale, negative_prompt)
+    )
     if job["settings"] is None:
         job["settings"] = new_settings
         _write_job(job)
@@ -269,20 +313,28 @@ def process_job(job_id: str, long_edge: int, steps: int, seed: int, prompt: str,
                         f"Edit this video frame with one targeted change: {prompt_text} "
                         "Keep all other elements unchanged. Preserve the original composition and camera angle."
                     )
-                request = Request("edit", prompt_text, "source", "video", settings["steps"], settings["seed"], False, (source,), *inference_size)
+                request = Request(
+                    "edit", prompt_text, settings.get("aspect", ORIGINAL_ASPECT),
+                    settings.get("quality", ORIGINAL_SIZE), settings["steps"], settings["seed"],
+                    settings.get("transparent", False), (source,), *inference_size,
+                    settings.get("true_cfg_scale", 1.0), settings.get("negative_prompt", ""),
+                )
                 generated = infer(request)
                 if generated.size != inference_size:
                     raise RuntimeError(f"Qwen returned {generated.size} for frame {i + 1}; expected {inference_size}.")
                 if generated.size != size:
                     generated = generated.resize(size, Image.Resampling.LANCZOS)
-                with Image.open(source) as original:
-                    base = original.convert("RGB").resize(size, Image.Resampling.LANCZOS)
-                if "A" in generated.getbands():
-                    base.paste(generated.convert("RGBA"), mask=generated.getchannel("A"))
+                if settings.get("transparent", False):
+                    frame = generated.convert("RGBA") if "A" not in generated.getbands() else generated
                 else:
-                    base.paste(generated.convert("RGB"))
+                    with Image.open(source) as original:
+                        frame = original.convert("RGB").resize(size, Image.Resampling.LANCZOS)
+                    if "A" in generated.getbands():
+                        frame.paste(generated.convert("RGBA"), mask=generated.getchannel("A"))
+                    else:
+                        frame.paste(generated.convert("RGB"))
                 temporary = target.with_suffix(".tmp.png")
-                base.save(temporary, "PNG")
+                frame.save(temporary, "PNG")
                 temporary.replace(target)
                 processed_now += 1
             job["completed_frames"] = i + 1

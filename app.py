@@ -9,7 +9,7 @@ from pathlib import Path
 
 import gradio as gr
 
-from qwen_workspace.core import ASPECTS, ORIGINAL_ASPECT, QUALITY_PIXELS, save_result, validate_request
+from qwen_workspace.core import ASPECTS, ORIGINAL_ASPECT, ORIGINAL_SIZE, QUALITY_PIXELS, save_result, validate_request
 from qwen_workspace.model import infer
 from qwen_workspace.video import (
     DEFAULT_PROMPT, EDIT_PROMPT_HINT, PauseRequested, create_job, job_mode, load_job,
@@ -75,10 +75,24 @@ def controls(prefix: str):
             label="Aspect ratio",
         )
         quality = gr.Dropdown(
-            choices=list(QUALITY_PIXELS),
-            value="Standard (~1 MP)",
+            choices=([ORIGINAL_SIZE] if editing else []) + list(QUALITY_PIXELS),
+            value=ORIGINAL_SIZE if editing else "Standard (~1 MP)",
             label="Size",
         )
+        if editing:
+            aspect.change(
+                lambda selected_aspect, selected_quality: (
+                    "Standard (~1 MP)" if selected_aspect != ORIGINAL_ASPECT and selected_quality == ORIGINAL_SIZE
+                    else selected_quality
+                ),
+                [aspect, quality], [quality], queue=False,
+            )
+            quality.change(
+                lambda selected_quality, selected_aspect: (
+                    ORIGINAL_ASPECT if selected_quality == ORIGINAL_SIZE else selected_aspect
+                ),
+                [quality, aspect], [aspect], queue=False,
+            )
     with gr.Row():
         steps = gr.Slider(1, 80, value=40, step=1, label="Steps")
         seed = gr.Number(value=-1, precision=0, label="Seed (-1 for random)")
@@ -279,7 +293,7 @@ def build_app() -> gr.Blocks:
         gr.Markdown(
             "# Qwen Image 2.1 Local\n"
             "Generate images, edit images, upscale video, or experimentally edit a video. First use downloads about 33 GB of model files; "
-            "the console shows download progress. Small size is quickest; Standard is the default for 16 GB VRAM."
+            "the console shows download progress. Small size is quickest; Edit preserves input resolution by default."
         )
         with gr.Tabs():
             with gr.Tab("Generate"):

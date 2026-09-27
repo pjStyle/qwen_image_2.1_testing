@@ -26,6 +26,7 @@ ASPECTS: dict[str, tuple[int, int]] = {
     "9:16": (9, 16),
 }
 ORIGINAL_ASPECT = "Original image"
+ORIGINAL_SIZE = "Preserve input resolution"
 QUALITY_PIXELS = {
     "Small (512×512)": 512**2,
     "Standard (~1 MP)": 1024**2,
@@ -133,8 +134,10 @@ def validate_request(
     if aspect == ORIGINAL_ASPECT:
         if mode != "edit" or original_size is None:
             raise ValueError("Original image aspect ratio requires an Edit reference image.")
-        width, height = original_dimensions(*original_size, quality)
+        width, height = original_size if quality == ORIGINAL_SIZE else original_dimensions(*original_size, quality)
     else:
+        if quality == ORIGINAL_SIZE:
+            raise ValueError("Preserve input resolution requires the Original image aspect ratio in Edit.")
         width, height = dimensions(aspect, quality)
     return Request(
         mode, prompt, aspect, quality, steps, seed, bool(transparent), paths, width, height,

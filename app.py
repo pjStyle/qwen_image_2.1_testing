@@ -35,6 +35,10 @@ def run(
     negative_prompt: str = "",
     progress=gr.Progress(),
 ):
+    # Gradio Gallery inputs are (filepath, caption) pairs; the request validator
+    # and model pipeline consume only file paths. Keep gallery order intact.
+    if references:
+        references = [item[0] if isinstance(item, (tuple, list)) else item for item in references]
     try:
         request = validate_request(
             mode, prompt, aspect, quality, int(steps), int(seed), transparent, references,
@@ -349,9 +353,12 @@ def build_app() -> gr.Blocks:
                 )
             with gr.Tab("Edit"):
                 edit_prompt = gr.Textbox(label="Edit prompt", lines=4, placeholder="Describe how to change or combine the references")
-                references = gr.File(
+                references = gr.Gallery(
                     label="Reference images (1–10, in upload order)",
-                    file_count="multiple",
+                    columns=4,
+                    object_fit="contain",
+                    interactive=True,
+                    sources=["upload"],
                     file_types=[".png", ".jpg", ".jpeg", ".webp", ".bmp"],
                     type="filepath",
                 )

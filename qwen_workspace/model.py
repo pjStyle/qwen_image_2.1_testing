@@ -40,10 +40,19 @@ def get_pipeline():
     return pipe
 
 
-def infer(request: Request, timings: dict[str, float] | None = None) -> Image.Image:
+def infer(request: Request, timings: dict[str, float | int] | None = None) -> Image.Image:
     import torch
 
     started = time.perf_counter()
+    cuda = getattr(torch, "cuda", None)
+    track_vram_peaks = False
+    if timings is not None and cuda is not None:
+        try:
+            if cuda.is_available():
+                cuda.reset_peak_memory_stats()
+                track_vram_peaks = True
+        except (AttributeError, AssertionError, RuntimeError):
+            pass
     pipe = get_pipeline()
     if timings is not None:
         timings["pipeline_load_seconds"] = time.perf_counter() - started
@@ -55,7 +64,10 @@ def infer(request: Request, timings: dict[str, float] | None = None) -> Image.Im
         size = reference_dimensions(*image.size, request.reference_quality)
         if image.size != size:
             image = image.resize(size, Image.Resampling.LANCZOS)
-        resized_note = f" (resized from {original_size[0]}x{original_size[1]})" if image.size != original_size else ""
+        resized_note = (
+            f" (resized from {original_size[0]}x{original_size[1]})"
+            if image.size != original_size else ""
+        )
         log.info(
             "Reference %d/%d resolution used by model: %dx%d%s",
             index, len(request.references), image.width, image.height, resized_note,
@@ -97,4 +109,10 @@ def infer(request: Request, timings: dict[str, float] | None = None) -> Image.Im
         result = result.resize((request.width, request.height), Image.Resampling.LANCZOS)
     if timings is not None:
         timings["output_resize_seconds"] = time.perf_counter() - pipeline_end
+        if track_vram_peaks:
+            try:
+                timings["peak_vram_allocated_bytes"] = cuda.max_memory_allocated()
+                timings["peak_vram_reserved_bytes"] = cuda.max_memory_reserved()
+            except (AttributeError, AssertionError, RuntimeError):
+                pass
     return result

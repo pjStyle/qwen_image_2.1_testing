@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 
 import gradio as gr
@@ -14,6 +15,7 @@ from qwen_workspace.core import (
     REFERENCE_QUALITY_PIXELS, save_result, validate_request,
 )
 from qwen_workspace.model import infer
+from qwen_workspace.metrics import PeakRssSampler
 from qwen_workspace.video import (
     DEFAULT_PROMPT, EDIT_PROMPT_HINT, PauseRequested, create_job, job_mode, load_job,
     frame_dimensions, preview_frames, process_job, require_job_mode, target_dimensions, zip_frames,
@@ -39,6 +41,7 @@ def run(
     reference_quality: str = ORIGINAL_SIZE,
     progress=gr.Progress(),
 ):
+    generation_started = time.perf_counter()
     # Gradio Gallery inputs are (filepath, caption) pairs; the request validator
     # and model pipeline consume only file paths. Keep gallery order intact.
     if references:
@@ -53,14 +56,30 @@ def run(
 
     try:
         progress(0, desc="Checking model download and loading pipeline. First run can take a while.")
-        image = infer(request)
-        progress(0.9, desc="Saving PNG and settings")
-        image_path, _ = save_result(image, request)
+        timings: dict[str, float | int] = {}
+        with PeakRssSampler() as ram_sampler:
+            image = infer(request, timings)
+            progress(0.9, desc="Saving PNG and settings")
+            image_path, _ = save_result(image, request)
+        elapsed = time.perf_counter() - generation_started
+        resource_notes = []
+        allocated = timings.get("peak_vram_allocated_bytes")
+        reserved = timings.get("peak_vram_reserved_bytes")
+        if allocated is not None and reserved is not None:
+            mib = 1024**2
+            resource_notes.append(
+                f"peak VRAM allocated/reserved {allocated / mib:.0f}/{reserved / mib:.0f} MiB"
+            )
+        if ram_sampler.peak_bytes is not None:
+            resource_notes.append(f"sampled peak process RAM {ram_sampler.peak_bytes / 1024**2:.0f} MiB")
+        else:
+            resource_notes.append("peak process RAM unavailable")
+        log.info("Generation completed in %.2f seconds | %s", elapsed, " | ".join(resource_notes))
         progress(1, desc="Done")
         alpha = " with alpha" if "A" in image.getbands() else ""
-        return str(image_path), f"Saved **{image_path.name}**{alpha} · seed **{request.seed}**"
+        return str(image_path), f"Saved **{image_path.name}**{alpha} · seed **{request.seed}** · {elapsed:.1f} s"
     except Exception as exc:
-        log.exception("Generation failed")
+        log.exception("Generation failed after %.2f seconds", time.perf_counter() - generation_started)
         try:
             import torch
 

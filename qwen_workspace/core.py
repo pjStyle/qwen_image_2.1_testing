@@ -33,6 +33,7 @@ QUALITY_PIXELS = {
     "1.5 MP": 1_500_000,
     "2K (high memory)": 2048**2,
 }
+REFERENCE_QUALITY_PIXELS = {"Extra small (256×256)": 256**2, **QUALITY_PIXELS}
 MAX_REFERENCES = 10
 MAX_INPUT_PIXELS = 32_000_000
 
@@ -51,6 +52,7 @@ class Request:
     height: int
     true_cfg_scale: float = 1.0
     negative_prompt: str = ""
+    reference_quality: str = ORIGINAL_SIZE
 
 
 def dimensions(aspect: str, quality: str) -> tuple[int, int]:
@@ -77,6 +79,26 @@ def original_dimensions(x: int, y: int, quality: str) -> tuple[int, int]:
     return width, height
 
 
+def reference_dimensions(width: int, height: int, quality: str) -> tuple[int, int]:
+    """Return source dimensions, or proportionally downsize to a pixel-area cap."""
+    if quality == ORIGINAL_SIZE:
+        return width, height
+    if quality not in REFERENCE_QUALITY_PIXELS:
+        raise ValueError("Choose a supported reference image size.")
+    max_pixels = REFERENCE_QUALITY_PIXELS[quality]
+    if width * height <= max_pixels:
+        return width, height
+    factor = math.sqrt(max_pixels / (width * height))
+    resized_width = max(1, int(width * factor))
+    resized_height = max(1, int(height * factor))
+    if resized_width * resized_height > max_pixels:
+        if width >= height:
+            resized_width = max(1, max_pixels // resized_height)
+        else:
+            resized_height = max(1, max_pixels // resized_width)
+    return resized_width, resized_height
+
+
 def validate_request(
     mode: str,
     prompt: str,
@@ -88,6 +110,7 @@ def validate_request(
     references: list[str] | None = None,
     true_cfg_scale: float = 1.0,
     negative_prompt: str = "",
+    reference_quality: str = ORIGINAL_SIZE,
 ) -> Request:
     if mode not in ("generate", "edit"):
         raise ValueError("Unknown mode.")
@@ -108,6 +131,8 @@ def validate_request(
     negative_prompt = negative_prompt.strip()
     if len(negative_prompt) > 4000:
         raise ValueError("Keep the negative prompt under 4,000 characters.")
+    if reference_quality != ORIGINAL_SIZE and reference_quality not in REFERENCE_QUALITY_PIXELS:
+        raise ValueError("Choose a supported reference image size.")
     if not isinstance(steps, int) or not 1 <= steps <= 80:
         raise ValueError("Steps must be between 1 and 80.")
     if seed is None or seed == -1:
@@ -141,7 +166,7 @@ def validate_request(
         width, height = dimensions(aspect, quality)
     return Request(
         mode, prompt, aspect, quality, steps, seed, bool(transparent), paths, width, height,
-        true_cfg_scale, negative_prompt,
+        true_cfg_scale, negative_prompt, reference_quality,
     )
 
 
@@ -165,6 +190,7 @@ def save_result(image: Image.Image, request: Request, output_dir: Path = OUTPUT_
         "effective_prompt": prepared_prompt(request),
         "aspect_ratio": request.aspect,
         "quality": request.quality,
+        "reference_quality": request.reference_quality,
         "width": request.width,
         "height": request.height,
         "steps": request.steps,

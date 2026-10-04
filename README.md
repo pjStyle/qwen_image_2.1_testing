@@ -30,6 +30,8 @@ The Generate and Edit tabs include a collapsed **Advanced guidance** section. Qw
 
 In **Edit**, **Original image** and **Preserve input resolution** are the defaults. The saved result uses the first uploaded reference's exact width and height. Qwen runs at the nearest larger 16-pixel grid size when necessary, then the result is resized to the original dimensions. Choose Small, Standard, 1.5 MP, or 2K to use a different pixel count while retaining the reference's shape. Choosing a named aspect ratio switches the size to Standard; selecting Preserve input resolution switches the aspect ratio back to Original image. Large input images may exhaust GPU memory. **Generate** still defaults to 1:1 at Standard size.
 
+Edit also has a **Reference image size** setting, which defaults to **Preserve input resolution**. Extra small (256×256), Small (512×512), Standard (~1 MP), 1.5 MP, and 2K set a maximum pixel area for each reference image. Larger images are resized proportionally before inference; smaller images remain unchanged. This setting does not change the output size controls.
+
 Each result is saved as a PNG in `outputs/`, beside a JSON file with its prompt, effective prompt, settings, seed, and reference filenames. Input images are read from Gradio's temporary upload paths and are not copied into `outputs/`. Only one request runs at a time.
 
 ## Video frames

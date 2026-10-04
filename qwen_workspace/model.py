@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from .core import MODEL_ID, ORIGINAL_ASPECT, ROOT, Request, prepared_prompt
+from .core import MODEL_ID, ORIGINAL_ASPECT, ROOT, Request, prepared_prompt, reference_dimensions
 
 log = logging.getLogger(__name__)
 _pipeline = None
@@ -48,9 +48,19 @@ def infer(request: Request, timings: dict[str, float] | None = None) -> Image.Im
     if timings is not None:
         timings["pipeline_load_seconds"] = time.perf_counter() - started
     images = []
-    for path in request.references:
+    for index, path in enumerate(request.references, start=1):
         with Image.open(path) as source:
-            images.append(source.convert("RGBA" if source.mode == "RGBA" else "RGB"))
+            image = source.convert("RGBA" if source.mode == "RGBA" else "RGB")
+        original_size = image.size
+        size = reference_dimensions(*image.size, request.reference_quality)
+        if image.size != size:
+            image = image.resize(size, Image.Resampling.LANCZOS)
+        resized_note = f" (resized from {original_size[0]}x{original_size[1]})" if image.size != original_size else ""
+        log.info(
+            "Reference %d/%d resolution used by model: %dx%d%s",
+            index, len(request.references), image.width, image.height, resized_note,
+        )
+        images.append(image)
     model_width, model_height = request.width, request.height
     if request.aspect == ORIGINAL_ASPECT:
         model_width = (model_width + 15) // 16 * 16

@@ -9,7 +9,10 @@ from pathlib import Path
 
 import gradio as gr
 
-from qwen_workspace.core import ASPECTS, ORIGINAL_ASPECT, ORIGINAL_SIZE, QUALITY_PIXELS, save_result, validate_request
+from qwen_workspace.core import (
+    ASPECTS, ORIGINAL_ASPECT, ORIGINAL_SIZE, QUALITY_PIXELS,
+    REFERENCE_QUALITY_PIXELS, save_result, validate_request,
+)
 from qwen_workspace.model import infer
 from qwen_workspace.video import (
     DEFAULT_PROMPT, EDIT_PROMPT_HINT, PauseRequested, create_job, job_mode, load_job,
@@ -33,6 +36,7 @@ def run(
     transparent: bool,
     true_cfg_scale: float = 1.0,
     negative_prompt: str = "",
+    reference_quality: str = ORIGINAL_SIZE,
     progress=gr.Progress(),
 ):
     # Gradio Gallery inputs are (filepath, caption) pairs; the request validator
@@ -42,7 +46,7 @@ def run(
     try:
         request = validate_request(
             mode, prompt, aspect, quality, int(steps), int(seed), transparent, references,
-            true_cfg_scale, negative_prompt,
+            true_cfg_scale, negative_prompt, reference_quality,
         )
     except (TypeError, ValueError) as exc:
         raise gr.Error(str(exc)) from exc
@@ -362,6 +366,11 @@ def build_app() -> gr.Blocks:
                     file_types=[".png", ".jpg", ".jpeg", ".webp", ".bmp"],
                     type="filepath",
                 )
+                reference_quality = gr.Dropdown(
+                    choices=[ORIGINAL_SIZE, *REFERENCE_QUALITY_PIXELS],
+                    value=ORIGINAL_SIZE,
+                    label="Reference image size",
+                )
                 (
                     e_aspect, e_quality, e_steps, e_seed, e_transparent, e_cfg, e_negative_prompt,
                     e_output, e_status,
@@ -371,7 +380,7 @@ def build_app() -> gr.Blocks:
                     run,
                     inputs=[
                         gr.State("edit"), edit_prompt, references, e_aspect, e_quality, e_steps,
-                        e_seed, e_transparent, e_cfg, e_negative_prompt,
+                        e_seed, e_transparent, e_cfg, e_negative_prompt, reference_quality,
                     ],
                     outputs=[e_output, e_status],
                     concurrency_limit=1,

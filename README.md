@@ -36,7 +36,7 @@ Each result is saved as a PNG in `outputs/`, beside a JSON file with its prompt,
 
 ## VRAM presets
 
-The shared **VRAM preset** dropdown applies to all five tabs. **Base — BF16** is the default and retains the original loading behavior. **Medium VRAM — 8-bit** quantizes the transformer and text encoder to 8-bit. **Low VRAM — 4-bit** uses NF4 quantization with BF16 computation. All presets use CPU offload and the same downloaded checkpoint; no extra checkpoint download is needed. Quantization happens during loading and may change output quality or speed.
+The shared **VRAM preset** dropdown applies to all six tabs. **Base — BF16** is the default and retains the original loading behavior. **Medium VRAM — 8-bit** quantizes the transformer and text encoder to 8-bit. **Low VRAM — 4-bit** uses NF4 quantization with BF16 computation. All presets use CPU offload and the same downloaded checkpoint; no extra checkpoint download is needed. Quantization happens during loading and may change output quality or speed.
 
 After updating, rerun `setup.cmd` (or `setup_runpod.sh` on Runpod) to install the pinned bitsandbytes dependency. Changing the dropdown takes effect on the next generation or batch and reloads the pipeline; it does not interrupt an active request. Video jobs save and lock their preset with other settings, and loading a job restores its preset. Older saved jobs use Base.
 
@@ -52,6 +52,16 @@ The **Perspectives** tab creates selected views from 1–10 reference images of 
 Choose any subset and click **Generate selected perspectives**. Results appear in the gallery as each image finishes. The tab uses the shared VRAM preset, defaults to 40 steps and seed 42, and preserves the first reference's output resolution. A random seed (`-1`) is chosen once and reused for every selected view. Each view uses the uploaded originals, rather than a previous generated image.
 
 Batches are saved in `outputs/perspectives/<batch-id>/`, including retained references, PNGs, prompt/settings JSON files, timings and `batch.json`. The downloadable ZIP contains the whole batch. If a view fails, processing stops and the completed images remain available with a partial ZIP.
+
+## Poses & Expressions
+
+The **Poses & Expressions** tab generates **Wall lean**, **Victory cheer**, **Flirty smile** (index finger touching the lower lip), **Confident hero**, **Curious thinker**, and **Surprised reaction** from 1–10 reference images of the same subject. All six are initially selected, with results displayed in a three-column, two-row grid. The prompts preserve identity, facial structure, clothing or exterior design, lighting and style while changing pose and expression. Wall lean can add a plain wall; the other presets retain the reference setting. Wall lean, victory cheer and confident hero show the whole body; flirty smile, curious thinker and surprised reaction are waist-up portraits. These presets are intended for people and humanoid characters; adapt the editable prompts for other subjects.
+
+Choose any subset and click **Generate selected poses and expressions**. Open **Pose and expression prompts** to edit individual prompts or reset them to the tuned defaults. Shared additional instructions apply to every selected image. The tab uses the shared VRAM preset and GPU queue, defaults to 40 steps and seed 42, and preserves the first reference's output resolution. A seed of `-1` chooses one random seed for the whole batch. Each image uses the uploaded originals rather than another generated result. Size, aspect ratio, reference size, transparency and advanced guidance work as in Perspectives.
+
+Results appear as each image finishes and are saved in `outputs/poses/<batch-id>/`. The downloadable ZIP includes retained references, PNGs, prompt/settings metadata, timings and `batch.json`. Every selected prompt is validated before generation. If generation fails, processing stops and completed images remain available with a partial ZIP.
+
+The default prompts are tuned during development using separate prompting and visual-review agents against the retained robot reference. Low VRAM trials use 512×512, 40 steps and seed 42. Reviews equally score action/expression adherence, identity fidelity, anatomy/mechanical coherence and image quality. A passing trial averages at least 8/10 with adherence and fidelity each at least 8. Each preset has a ten-output cap; if none passes, the highest-scoring trial is retained. Selected prompts are rendered once in Medium VRAM at the original reference resolution. Trial artifacts, reviews, timings, comparisons and any missed targets or final regressions are retained in `outputs/poses_six_robot_20261007/report.md` (the original four-preset experiment remains in `outputs/poses_robot_20261007/`). These reviews are development checks for that reference; inspect results for other subjects.
 
 ## Video frames
 

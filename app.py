@@ -19,6 +19,7 @@ from qwen_workspace.metrics import PeakRssSampler
 from qwen_workspace.perspectives import (
     PERSPECTIVES, create_batch, generate_batch, prepare_requests, zip_batch,
 )
+from qwen_workspace import poses
 from qwen_workspace.video import (
     DEFAULT_PROMPT, EDIT_PROMPT_HINT, PauseRequested, create_job, job_mode, load_job,
     frame_dimensions, preview_frames, process_job, require_job_mode, target_dimensions, zip_frames,
@@ -102,7 +103,7 @@ def run(
 
 def controls(prefix: str, *, include_output: bool = True):
     with gr.Row():
-        editing = prefix in {"edit", "perspectives"}
+        editing = prefix in {"edit", "perspectives", "poses"}
         aspect = gr.Dropdown(
             choices=([ORIGINAL_ASPECT] if editing else []) + list(ASPECTS),
             value=ORIGINAL_ASPECT if editing else "1:1",
@@ -129,7 +130,7 @@ def controls(prefix: str, *, include_output: bool = True):
             )
     with gr.Row():
         steps = gr.Slider(1, 80, value=40, step=1, label="Steps")
-        seed = gr.Number(value=42 if prefix == "perspectives" else -1, precision=0, label="Seed (-1 for random)")
+        seed = gr.Number(value=42 if prefix in {"perspectives", "poses"} else -1, precision=0, label="Seed (-1 for random)")
     transparent = gr.Checkbox(label="Request transparent background (RGBA)")
     with gr.Accordion("Advanced guidance", open=False):
         gr.Markdown(
@@ -238,6 +239,110 @@ def perspectives_tab(vram_preset) -> None:
     status = gr.Markdown()
     button.click(
         run_perspectives,
+        inputs=[references, selected, instructions, aspect, quality, steps, seed, transparent,
+                cfg, negative, reference_quality, vram_preset, *prompt_inputs],
+        outputs=[gallery, archive, status], concurrency_limit=1, concurrency_id="gpu",
+    )
+
+
+def run_poses(
+    references, selected, instructions, aspect, quality, steps, seed, transparent, cfg,
+    negative_prompt, reference_quality, vram_preset, wall_lean_prompt, victory_cheer_prompt,
+    flirty_smile_prompt, confident_hero_prompt, curious_thinker_prompt, surprised_reaction_prompt,
+    progress=gr.Progress(),
+):
+    references = [item[0] if isinstance(item, (tuple, list)) else item for item in (references or [])]
+    prompts = dict(zip(poses.POSES, [
+        wall_lean_prompt, victory_cheer_prompt, flirty_smile_prompt,
+        confident_hero_prompt, curious_thinker_prompt, surprised_reaction_prompt,
+    ]))
+    try:
+        requests = poses.prepare_requests(
+            references, selected, instructions, prompts, aspect=aspect, quality=quality,
+            steps=int(steps), seed=int(seed), transparent=transparent, true_cfg_scale=cfg,
+            negative_prompt=negative_prompt, reference_quality=reference_quality, vram_preset=vram_preset,
+        )
+    except (TypeError, ValueError) as exc:
+        raise gr.Error(str(exc)) from exc
+    gallery = []
+    batch = None
+    iterator = None
+    try:
+        batch = poses.create_batch(requests)
+        total = len(requests)
+        used_seed = requests[0][1].seed
+        yield list(gallery), None, f"Starting {total} poses and expressions · seed **{used_seed}** · **{VRAM_PRESETS[vram_preset]}**"
+        iterator = poses.generate_batch(batch)
+        for index, (key, _) in enumerate(requests):
+            progress(index / total, desc=f"Pose {index + 1}/{total}: {poses.POSES[key].label}")
+            result = next(iterator)
+            gallery.append((str(batch.folder / result["image"]), result["label"]))
+            yield list(gallery), None, (
+                f"Completed **{index + 1}/{total}** · seed **{used_seed}** · "
+                f"{result['label']} in {result['total_seconds']:.1f}s"
+            )
+        # Exhaust the generator so its manifest records completion before creating the ZIP.
+        next(iterator, None)
+        archive = poses.zip_batch(batch)
+        progress(1, desc="Poses ready")
+        yield list(gallery), str(archive), (
+            f"Completed **{total}/{total}** · seed **{used_seed}** · **{VRAM_PRESETS[vram_preset]}**\n\n"
+            f"Saved to `outputs/poses/{batch.folder.name}`. ZIP includes images, prompts, settings and references."
+        )
+    except Exception as exc:
+        log.exception("Pose generation failed")
+        archive = None
+        if batch is not None:
+            try:
+                archive = str(poses.zip_batch(batch))
+            except Exception:
+                log.exception("Could not package partial pose batch")
+        yield list(gallery), archive, f"**Stopped after {len(gallery)}/{len(requests)} poses and expressions:** {exc}. Completed images remain saved."
+    finally:
+        if iterator is not None:
+            iterator.close()
+
+
+def poses_tab(vram_preset) -> None:
+    gr.Markdown(
+        "Upload a subject and choose new poses and expressions. Extra references should show the same subject. "
+        "Each image uses the uploaded originals and the same seed. Prompts preserve identity and appearance "
+        "while changing the pose and expression. Use the VRAM preset above; Small size is useful for trials."
+    )
+    references = gr.Gallery(
+        label="Reference images (1–10, first image sets original output size)", columns=4,
+        object_fit="contain", interactive=True, sources=["upload"], type="filepath",
+        file_types=[".png", ".jpg", ".jpeg", ".webp", ".bmp"],
+    )
+    selected = gr.CheckboxGroup(
+        choices=[(item.label, key) for key, item in poses.POSES.items()],
+        value=list(poses.POSES), label="Poses and expressions to generate",
+    )
+    instructions = gr.Textbox(
+        label="Additional instructions for every image (optional)", lines=2,
+        placeholder="For example: keep the jacket's pattern and eye color",
+    )
+    with gr.Accordion("Pose and expression prompts", open=False):
+        prompt_inputs = [
+            gr.Textbox(label=item.label, value=item.prompt, lines=4)
+            for item in poses.POSES.values()
+        ]
+        reset = gr.Button("Reset prompts")
+        reset.click(lambda: [item.prompt for item in poses.POSES.values()], outputs=prompt_inputs, queue=False)
+    reference_quality = gr.Dropdown(
+        choices=[ORIGINAL_SIZE, *REFERENCE_QUALITY_PIXELS], value=ORIGINAL_SIZE,
+        label="Reference image size",
+    )
+    aspect, quality, steps, seed, transparent, cfg, negative, _, _ = controls("poses", include_output=False)
+    button = gr.Button("Generate selected poses and expressions", variant="primary")
+    gallery = gr.Gallery(
+        label="Generated poses and expressions", columns=3, rows=2,
+        object_fit="contain", interactive=False,
+    )
+    archive = gr.File(label="Download poses and expressions ZIP", interactive=False)
+    status = gr.Markdown()
+    button.click(
+        run_poses,
         inputs=[references, selected, instructions, aspect, quality, steps, seed, transparent,
                 cfg, negative, reference_quality, vram_preset, *prompt_inputs],
         outputs=[gallery, archive, status], concurrency_limit=1, concurrency_id="gpu",
@@ -465,7 +570,7 @@ def build_app() -> gr.Blocks:
     with gr.Blocks(title="Qwen Image 2.1 Local") as demo:
         gr.Markdown(
             "# Qwen Image 2.1 Local\n"
-            "Generate images, edit images, create perspectives, upscale video, or experimentally edit a video. First use downloads about 33 GB of model files; "
+            "Generate images, edit images, create perspectives, poses and expressions, upscale video, or experimentally edit a video. First use downloads about 33 GB of model files; "
             "the console shows download progress. Small size is quickest; Edit preserves input resolution by default."
         )
         vram_preset = gr.Dropdown(
@@ -521,6 +626,8 @@ def build_app() -> gr.Blocks:
                 )
             with gr.Tab("Perspectives"):
                 perspectives_tab(vram_preset)
+            with gr.Tab("Poses & Expressions"):
+                poses_tab(vram_preset)
             with gr.Tab("Video"):
                 video_tab("upscale", vram_preset)
             with gr.Tab("Video Edit (experimental)"):

@@ -36,7 +36,7 @@ Each result is saved as a PNG in `outputs/`, beside a JSON file with its prompt,
 
 ## VRAM presets
 
-The shared **VRAM preset** dropdown applies to all four tabs. **Base — BF16** is the default and retains the original loading behavior. **Medium VRAM — 8-bit** quantizes the transformer and text encoder to 8-bit. **Low VRAM — 4-bit** uses NF4 quantization with BF16 computation. All presets use CPU offload and the same downloaded checkpoint; no extra checkpoint download is needed. Quantization happens during loading and may change output quality or speed.
+The shared **VRAM preset** dropdown applies to all five tabs. **Base — BF16** is the default and retains the original loading behavior. **Medium VRAM — 8-bit** quantizes the transformer and text encoder to 8-bit. **Low VRAM — 4-bit** uses NF4 quantization with BF16 computation. All presets use CPU offload and the same downloaded checkpoint; no extra checkpoint download is needed. Quantization happens during loading and may change output quality or speed.
 
 After updating, rerun `setup.cmd` (or `setup_runpod.sh` on Runpod) to install the pinned bitsandbytes dependency. Changing the dropdown takes effect on the next generation or batch and reloads the pipeline; it does not interrupt an active request. Video jobs save and lock their preset with other settings, and loading a job restores its preset. Older saved jobs use Base.
 
@@ -44,6 +44,14 @@ Size, guidance, and reference images still affect peak VRAM. These options do no
 
 The loader also moves bitsandbytes' internal 8-bit state with CPU offload, avoiding extra GPU copies. Compare output quality before running a long batch.
 Medium retains the small conditioning and input/output projections in BF16 to protect generation quality; the transformer blocks and text encoder use 8-bit quantization.
+
+## Perspectives
+
+The **Perspectives** tab creates selected views from 1–10 reference images of the same subject: **3/4 body (head to mid-thigh)**, **1/2 body (head and torso)**, **full body (head to feet)**, **bird's-eye**, **worm's-eye**, and **extreme face close-up**. These prompts generalize the robot experiment while preserving the uploaded subject's appearance, background, lighting and style. Open **Perspective prompts** to adjust individual prompts or add shared instructions. Body crops and face close-ups are intended for people and characters; adapt the prompts for other subjects. Inspect the resulting crop and camera angle, as adherence can vary.
+
+Choose any subset and click **Generate selected perspectives**. Results appear in the gallery as each image finishes. The tab uses the shared VRAM preset, defaults to 40 steps and seed 42, and preserves the first reference's output resolution. A random seed (`-1`) is chosen once and reused for every selected view. Each view uses the uploaded originals, rather than a previous generated image.
+
+Batches are saved in `outputs/perspectives/<batch-id>/`, including retained references, PNGs, prompt/settings JSON files, timings and `batch.json`. The downloadable ZIP contains the whole batch. If a view fails, processing stops and the completed images remain available with a partial ZIP.
 
 ## Video frames
 

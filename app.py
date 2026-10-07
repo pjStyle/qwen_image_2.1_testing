@@ -16,6 +16,9 @@ from qwen_workspace.core import (
 )
 from qwen_workspace.model import infer
 from qwen_workspace.metrics import PeakRssSampler
+from qwen_workspace.perspectives import (
+    PERSPECTIVES, create_batch, generate_batch, prepare_requests, zip_batch,
+)
 from qwen_workspace.video import (
     DEFAULT_PROMPT, EDIT_PROMPT_HINT, PauseRequested, create_job, job_mode, load_job,
     frame_dimensions, preview_frames, process_job, require_job_mode, target_dimensions, zip_frames,
@@ -97,9 +100,9 @@ def run(
         raise gr.Error(f"Generation failed: {exc}") from exc
 
 
-def controls(prefix: str):
+def controls(prefix: str, *, include_output: bool = True):
     with gr.Row():
-        editing = prefix == "edit"
+        editing = prefix in {"edit", "perspectives"}
         aspect = gr.Dropdown(
             choices=([ORIGINAL_ASPECT] if editing else []) + list(ASPECTS),
             value=ORIGINAL_ASPECT if editing else "1:1",
@@ -126,7 +129,7 @@ def controls(prefix: str):
             )
     with gr.Row():
         steps = gr.Slider(1, 80, value=40, step=1, label="Steps")
-        seed = gr.Number(value=-1, precision=0, label="Seed (-1 for random)")
+        seed = gr.Number(value=42 if prefix == "perspectives" else -1, precision=0, label="Seed (-1 for random)")
     transparent = gr.Checkbox(label="Request transparent background (RGBA)")
     with gr.Accordion("Advanced guidance", open=False):
         gr.Markdown(
@@ -139,9 +142,106 @@ def controls(prefix: str):
             lines=3,
             placeholder="Optional: describe what the result should avoid",
         )
-    output = gr.Image(type="filepath", label="Result", interactive=False)
-    status = gr.Markdown()
+    output = gr.Image(type="filepath", label="Result", interactive=False) if include_output else None
+    status = gr.Markdown() if include_output else None
     return aspect, quality, steps, seed, transparent, true_cfg_scale, negative_prompt, output, status
+
+
+def run_perspectives(
+    references, selected, instructions, aspect, quality, steps, seed, transparent, cfg,
+    negative_prompt, reference_quality, vram_preset, three_quarter_prompt, half_body_prompt,
+    full_body_prompt, birds_eye_prompt, worms_eye_prompt, face_closeup_prompt,
+    progress=gr.Progress(),
+):
+    references = [item[0] if isinstance(item, (tuple, list)) else item for item in (references or [])]
+    prompts = dict(zip(PERSPECTIVES, [
+        three_quarter_prompt, half_body_prompt, full_body_prompt,
+        birds_eye_prompt, worms_eye_prompt, face_closeup_prompt,
+    ]))
+    try:
+        requests = prepare_requests(
+            references, selected, instructions, prompts, aspect=aspect, quality=quality,
+            steps=int(steps), seed=int(seed), transparent=transparent, true_cfg_scale=cfg,
+            negative_prompt=negative_prompt, reference_quality=reference_quality, vram_preset=vram_preset,
+        )
+    except (TypeError, ValueError) as exc:
+        raise gr.Error(str(exc)) from exc
+    gallery = []
+    batch = None
+    try:
+        batch = create_batch(requests)
+        total = len(requests)
+        used_seed = requests[0][1].seed
+        yield gallery, None, f"Starting {total} perspectives · seed **{used_seed}** · **{VRAM_PRESETS[vram_preset]}**"
+        iterator = generate_batch(batch)
+        for index, (key, _) in enumerate(requests):
+            progress(index / total, desc=f"Perspective {index + 1}/{total}: {PERSPECTIVES[key].label}")
+            result = next(iterator)
+            gallery.append((str(batch.folder / result["image"]), result["label"]))
+            yield list(gallery), None, (
+                f"Completed **{index + 1}/{total}** · seed **{used_seed}** · "
+                f"{result['label']} in {result['total_seconds']:.1f}s"
+            )
+        # Exhaust the generator so its manifest records completion before creating the ZIP.
+        next(iterator, None)
+        archive = zip_batch(batch)
+        progress(1, desc="Perspectives ready")
+        yield gallery, str(archive), (
+            f"Completed **{total}/{total}** · seed **{used_seed}** · **{VRAM_PRESETS[vram_preset]}**\n\n"
+            f"Saved to `outputs/perspectives/{batch.folder.name}`. ZIP includes images, prompts, settings and references."
+        )
+    except Exception as exc:
+        log.exception("Perspective generation failed")
+        archive = None
+        if batch is not None:
+            try:
+                archive = str(zip_batch(batch))
+            except Exception:
+                log.exception("Could not package partial perspective batch")
+        yield gallery, archive, f"**Stopped after {len(gallery)}/{len(requests)} perspectives:** {exc}. Completed images remain saved."
+
+
+def perspectives_tab(vram_preset) -> None:
+    gr.Markdown(
+        "Upload a subject and choose its views. Optional extra references should show the same subject. "
+        "Each view uses the uploaded originals and the same seed. The prompts preserve the subject's "
+        "appearance and setting. Use the VRAM preset above; Small size is useful for quick trials."
+    )
+    references = gr.Gallery(
+        label="Reference images (1–10, first image sets original output size)", columns=4,
+        object_fit="contain", interactive=True, sources=["upload"], type="filepath",
+        file_types=[".png", ".jpg", ".jpeg", ".webp", ".bmp"],
+    )
+    selected = gr.CheckboxGroup(
+        choices=[(item.label, key) for key, item in PERSPECTIVES.items()],
+        value=list(PERSPECTIVES), label="Perspectives to generate",
+    )
+    instructions = gr.Textbox(
+        label="Additional instructions for every view (optional)", lines=2,
+        placeholder="For example: keep the jacket's pattern and the original expression",
+    )
+    with gr.Accordion("Perspective prompts", open=False):
+        prompt_inputs = [
+            gr.Textbox(label=item.label, value=item.prompt, lines=4)
+            for item in PERSPECTIVES.values()
+        ]
+        reset = gr.Button("Reset prompts")
+        reset.click(lambda: [item.prompt for item in PERSPECTIVES.values()], outputs=prompt_inputs, queue=False)
+    reference_quality = gr.Dropdown(
+        choices=[ORIGINAL_SIZE, *REFERENCE_QUALITY_PIXELS], value=ORIGINAL_SIZE,
+        label="Reference image size",
+    )
+    aspect, quality, steps, seed, transparent, cfg, negative, _, _ = controls("perspectives", include_output=False)
+    button = gr.Button("Generate selected perspectives", variant="primary")
+    gallery = gr.Gallery(label="Generated perspectives", columns=3, object_fit="contain", interactive=False)
+    archive = gr.File(label="Download perspectives ZIP", interactive=False)
+    status = gr.Markdown()
+    button.click(
+        run_perspectives,
+        inputs=[references, selected, instructions, aspect, quality, steps, seed, transparent,
+                cfg, negative, reference_quality, vram_preset, *prompt_inputs],
+        outputs=[gallery, archive, status], concurrency_limit=1, concurrency_id="gpu",
+    )
 
 
 def _video_status(job: dict, extra: str = "") -> str:
@@ -365,7 +465,7 @@ def build_app() -> gr.Blocks:
     with gr.Blocks(title="Qwen Image 2.1 Local") as demo:
         gr.Markdown(
             "# Qwen Image 2.1 Local\n"
-            "Generate images, edit images, upscale video, or experimentally edit a video. First use downloads about 33 GB of model files; "
+            "Generate images, edit images, create perspectives, upscale video, or experimentally edit a video. First use downloads about 33 GB of model files; "
             "the console shows download progress. Small size is quickest; Edit preserves input resolution by default."
         )
         vram_preset = gr.Dropdown(
@@ -419,6 +519,8 @@ def build_app() -> gr.Blocks:
                     concurrency_limit=1,
                     concurrency_id="gpu",
                 )
+            with gr.Tab("Perspectives"):
+                perspectives_tab(vram_preset)
             with gr.Tab("Video"):
                 video_tab("upscale", vram_preset)
             with gr.Tab("Video Edit (experimental)"):

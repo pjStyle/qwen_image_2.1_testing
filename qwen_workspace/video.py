@@ -18,7 +18,7 @@ import imageio_ffmpeg
 from PIL import Image, UnidentifiedImageError
 
 from .core import (ASPECTS, ORIGINAL_ASPECT, ORIGINAL_SIZE, OUTPUT_DIR,
-                   Request, dimensions, original_dimensions)
+                   Request, dimensions, original_dimensions, validate_vram_preset)
 from .model import infer
 
 
@@ -294,7 +294,8 @@ def process_job(job_id: str, long_edge: int | None, steps: int, seed: int, promp
                 on_progress: Progress | None = None, expected_mode: str | None = None,
                 aspect: str = ORIGINAL_ASPECT, quality: str = ORIGINAL_SIZE,
                 transparent: bool = False, true_cfg_scale: float = 1.0,
-                negative_prompt: str | None = "") -> Path:
+                negative_prompt: str | None = "", vram_preset: str = "base") -> Path:
+    validate_vram_preset(vram_preset)
     job = load_job(job_id)
     if expected_mode is not None and job_mode(job) != expected_mode:
         raise ValueError("This job belongs to the other video tab.")
@@ -306,6 +307,9 @@ def process_job(job_id: str, long_edge: int | None, steps: int, seed: int, promp
         _frame_settings(steps, seed, prompt, source_size, aspect, quality, transparent,
                         true_cfg_scale, negative_prompt)
     )
+    new_settings["vram_preset"] = vram_preset
+    if job["settings"] is not None:
+        job["settings"].setdefault("vram_preset", "base")
     if job["settings"] is None:
         job["settings"] = new_settings
         _write_job(job)
@@ -349,6 +353,7 @@ def process_job(job_id: str, long_edge: int | None, steps: int, seed: int, promp
                     settings.get("quality", ORIGINAL_SIZE), settings["steps"], settings["seed"],
                     settings.get("transparent", False), (source,), *inference_size,
                     settings.get("true_cfg_scale", 1.0), settings.get("negative_prompt", ""),
+                    vram_preset=settings["vram_preset"],
                 )
                 log.info("Job %s frame %d/%d: starting model inference", job_id, i + 1, len(frames))
                 generated = infer(request, timings)

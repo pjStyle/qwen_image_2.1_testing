@@ -36,6 +36,17 @@ QUALITY_PIXELS = {
 REFERENCE_QUALITY_PIXELS = {"Extra small (256×256)": 256**2, **QUALITY_PIXELS}
 MAX_REFERENCES = 10
 MAX_INPUT_PIXELS = 32_000_000
+VRAM_PRESETS = {
+    "base": "Base — BF16",
+    "medium": "Medium VRAM — 8-bit",
+    "low": "Low VRAM — 4-bit",
+}
+
+
+def validate_vram_preset(value: str) -> str:
+    if not isinstance(value, str) or value not in VRAM_PRESETS:
+        raise ValueError("Choose a supported VRAM preset.")
+    return value
 
 
 @dataclass(frozen=True)
@@ -53,6 +64,7 @@ class Request:
     true_cfg_scale: float = 1.0
     negative_prompt: str = ""
     reference_quality: str = ORIGINAL_SIZE
+    vram_preset: str = "base"
 
 
 def dimensions(aspect: str, quality: str) -> tuple[int, int]:
@@ -111,7 +123,9 @@ def validate_request(
     true_cfg_scale: float = 1.0,
     negative_prompt: str = "",
     reference_quality: str = ORIGINAL_SIZE,
+    vram_preset: str = "base",
 ) -> Request:
+    validate_vram_preset(vram_preset)
     if mode not in ("generate", "edit"):
         raise ValueError("Unknown mode.")
     prompt = (prompt or "").strip()
@@ -166,7 +180,7 @@ def validate_request(
         width, height = dimensions(aspect, quality)
     return Request(
         mode, prompt, aspect, quality, steps, seed, bool(transparent), paths, width, height,
-        true_cfg_scale, negative_prompt, reference_quality,
+        true_cfg_scale, negative_prompt, reference_quality, vram_preset,
     )
 
 
@@ -185,6 +199,7 @@ def save_result(image: Image.Image, request: Request, output_dir: Path = OUTPUT_
     image.save(image_path, format="PNG")
     metadata: dict[str, Any] = {
         "model": MODEL_ID,
+        "vram_preset": request.vram_preset,
         "mode": request.mode,
         "prompt": request.prompt,
         "effective_prompt": prepared_prompt(request),

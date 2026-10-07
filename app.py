@@ -12,7 +12,7 @@ import gradio as gr
 
 from qwen_workspace.core import (
     ASPECTS, ORIGINAL_ASPECT, ORIGINAL_SIZE, QUALITY_PIXELS,
-    REFERENCE_QUALITY_PIXELS, save_result, validate_request,
+    REFERENCE_QUALITY_PIXELS, VRAM_PRESETS, save_result, validate_request,
 )
 from qwen_workspace.model import infer
 from qwen_workspace.metrics import PeakRssSampler
@@ -40,6 +40,7 @@ def run(
     negative_prompt: str = "",
     reference_quality: str = ORIGINAL_SIZE,
     progress=gr.Progress(),
+    vram_preset: str = "base",
 ):
     generation_started = time.perf_counter()
     # Gradio Gallery inputs are (filepath, caption) pairs; the request validator
@@ -49,7 +50,7 @@ def run(
     try:
         request = validate_request(
             mode, prompt, aspect, quality, int(steps), int(seed), transparent, references,
-            true_cfg_scale, negative_prompt, reference_quality,
+            true_cfg_scale, negative_prompt, reference_quality, vram_preset,
         )
     except (TypeError, ValueError) as exc:
         raise gr.Error(str(exc)) from exc
@@ -77,7 +78,10 @@ def run(
         log.info("Generation completed in %.2f seconds | %s", elapsed, " | ".join(resource_notes))
         progress(1, desc="Done")
         alpha = " with alpha" if "A" in image.getbands() else ""
-        return str(image_path), f"Saved **{image_path.name}**{alpha} · seed **{request.seed}** · {elapsed:.1f} s"
+        return str(image_path), (
+            f"Saved **{image_path.name}**{alpha} · {VRAM_PRESETS[request.vram_preset]} · "
+            f"seed **{request.seed}** · {elapsed:.1f} s"
+        )
     except Exception as exc:
         log.exception("Generation failed after %.2f seconds", time.perf_counter() - generation_started)
         try:
@@ -152,6 +156,8 @@ def _video_status(job: dict, extra: str = "") -> str:
     )
     if extra:
         message += f"\n\n{extra}"
+    if job.get("settings"):
+        message += f"\n\nVRAM preset: **{VRAM_PRESETS[job['settings'].get('vram_preset', 'base')]}**"
     return message
 
 
@@ -204,6 +210,7 @@ def load_video_job(job_id: str, mode: str):
             video_size_note(job_id, settings.get("aspect", ORIGINAL_ASPECT),
                             settings.get("quality", ORIGINAL_SIZE), settings.get("long_edge")),
             settings.get("long_edge"),
+            settings.get("vram_preset", "base"),
         )
     except Exception as exc:
         raise gr.Error(str(exc)) from exc
@@ -211,7 +218,8 @@ def load_video_job(job_id: str, mode: str):
 
 def run_video_job(job_id: str, aspect: str, quality: str, steps: float, seed: float,
                   prompt: str, transparent: bool, true_cfg_scale: float, negative_prompt: str,
-                  legacy_long_edge: int | None, mode: str, progress=gr.Progress()):
+                  legacy_long_edge: int | None, mode: str, progress=gr.Progress(),
+                  vram_preset: str = "base"):
     if not job_id:
         raise gr.Error("Extract a video or load a saved job first.")
     try:
@@ -233,6 +241,7 @@ def run_video_job(job_id: str, aspect: str, quality: str, steps: float, seed: fl
             on_progress=on_frame, expected_mode=mode, aspect=aspect, quality=quality,
             transparent=transparent, true_cfg_scale=true_cfg_scale,
             negative_prompt=negative_prompt,
+            vram_preset=vram_preset,
         )
         job = load_job(job_id)
         return preview_frames(job_id, processed=True), str(result), _video_status(job, "Video ready to preview or download.")
@@ -263,7 +272,7 @@ def download_frames(job_id: str, processed: bool, mode: str):
         raise gr.Error(str(exc)) from exc
 
 
-def video_tab(mode: str) -> None:
+def video_tab(mode: str, vram_preset) -> None:
     editing = mode == "edit"
     mode_state = gr.State(mode)
     if editing:
@@ -337,13 +346,13 @@ def video_tab(mode: str) -> None:
         load_video_job, [job_id, mode_state],
         [source_gallery, result_gallery, completed_video, video_status,
          aspect, quality, video_steps, video_seed, video_prompt, transparent, cfg,
-         negative_prompt, size_note, legacy_long_edge],
+         negative_prompt, size_note, legacy_long_edge, vram_preset],
     )
     aspect.change(video_size_note, [job_id, aspect, quality, legacy_long_edge], [size_note], queue=False)
     quality.change(video_size_note, [job_id, aspect, quality, legacy_long_edge], [size_note], queue=False)
     process_button.click(
         run_video_job, [job_id, aspect, quality, video_steps, video_seed, video_prompt,
-                        transparent, cfg, negative_prompt, legacy_long_edge, mode_state],
+                        transparent, cfg, negative_prompt, legacy_long_edge, mode_state, vram_preset],
         [result_gallery, completed_video, video_status],
         concurrency_limit=1, concurrency_id="gpu",
     )
@@ -359,6 +368,11 @@ def build_app() -> gr.Blocks:
             "Generate images, edit images, upscale video, or experimentally edit a video. First use downloads about 33 GB of model files; "
             "the console shows download progress. Small size is quickest; Edit preserves input resolution by default."
         )
+        vram_preset = gr.Dropdown(
+            choices=[(label, value) for value, label in VRAM_PRESETS.items()],
+            value="base", label="VRAM preset",
+            info="Applied on the next run. Switching reloads the model. Size and references still affect VRAM.",
+        )
         with gr.Tabs():
             with gr.Tab("Generate"):
                 prompt = gr.Textbox(label="Prompt", lines=4, placeholder="Describe the image to create")
@@ -368,7 +382,7 @@ def build_app() -> gr.Blocks:
                     run,
                     inputs=[
                         gr.State("generate"), prompt, gr.State(None), aspect, quality, steps, seed,
-                        transparent, cfg, negative_prompt,
+                        transparent, cfg, negative_prompt, gr.State(ORIGINAL_SIZE), vram_preset,
                     ],
                     outputs=[output, status],
                     concurrency_limit=1,
@@ -399,16 +413,16 @@ def build_app() -> gr.Blocks:
                     run,
                     inputs=[
                         gr.State("edit"), edit_prompt, references, e_aspect, e_quality, e_steps,
-                        e_seed, e_transparent, e_cfg, e_negative_prompt, reference_quality,
+                        e_seed, e_transparent, e_cfg, e_negative_prompt, reference_quality, vram_preset,
                     ],
                     outputs=[e_output, e_status],
                     concurrency_limit=1,
                     concurrency_id="gpu",
                 )
             with gr.Tab("Video"):
-                video_tab("upscale")
+                video_tab("upscale", vram_preset)
             with gr.Tab("Video Edit (experimental)"):
-                video_tab("edit")
+                video_tab("edit", vram_preset)
         gr.Markdown("Results and their settings are saved in the `outputs` folder. A random seed is shown after each run.")
     return demo
 

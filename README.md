@@ -34,6 +34,17 @@ Edit also has a **Reference image size** setting, which defaults to **Preserve i
 
 Each result is saved as a PNG in `outputs/`, beside a JSON file with its prompt, effective prompt, settings, seed, and reference filenames. Input images are read from Gradio's temporary upload paths and are not copied into `outputs/`. Only one request runs at a time.
 
+## VRAM presets
+
+The shared **VRAM preset** dropdown applies to all four tabs. **Base — BF16** is the default and retains the original loading behavior. **Medium VRAM — 8-bit** quantizes the transformer and text encoder to 8-bit. **Low VRAM — 4-bit** uses NF4 quantization with BF16 computation. All presets use CPU offload and the same downloaded checkpoint; no extra checkpoint download is needed. Quantization happens during loading and may change output quality or speed.
+
+After updating, rerun `setup.cmd` (or `setup_runpod.sh` on Runpod) to install the pinned bitsandbytes dependency. Changing the dropdown takes effect on the next generation or batch and reloads the pipeline; it does not interrupt an active request. Video jobs save and lock their preset with other settings, and loading a job restores its preset. Older saved jobs use Base.
+
+Size, guidance, and reference images still affect peak VRAM. These options do not establish support for GPUs below the current 16 GB requirement. The console reports the selected preset and measured memory use.
+
+The loader also moves bitsandbytes' internal 8-bit state with CPU offload, avoiding extra GPU copies. Compare output quality before running a long batch.
+Medium retains the small conditioning and input/output projections in BF16 to protect generation quality; the transformer blocks and text encoder use 8-bit quantization.
+
 ## Video frames
 
 1. Open **Video**, upload a clip, choose output FPS (10 by default) and optional start/end times, then click **Extract frames**. Review the source frame samples and displayed frame count before starting Qwen. The chosen FPS controls both frame sampling and MP4 playback, keeping approximately the same duration. If it exceeds the source FPS, FFmpeg repeats frames; this feature does not create new motion.

@@ -46,19 +46,27 @@ PERSPECTIVES = {
     ),
     "half_body": Perspective(
         "1/2 body — torso up",
-        PRESERVE + "Create a half-body portrait showing the complete head, neck, shoulders, chest "
-        "and upper abdomen. Camera at chest height, approximately 45 degrees toward the subject's "
-        "front-left side, showing the front and left side of the torso with depth. Frame tightly "
-        "from just above the top of the head to the middle of the abdomen. The lower image border "
-        "cuts across the abdomen above the waist. The waist, pelvis, hips and legs are outside the "
-        "frame. Crop the arms naturally at the bottom edge.",
+        "Create a CLOSE UPPER-TORSO PORTRAIT of the same subject from the reference. Frame tightly "
+        "from just above the complete head to the middle of the abdomen. The lower image border "
+        "cuts across the abdominal surface halfway between the chest and waist. Only the upper "
+        "half of the abdomen is visible. The lower abdomen, waist, pelvis and legs lie below the "
+        "photograph. Show the complete head, neck, shoulders and chest; cut the arms at the bottom "
+        "edge. Keep the original frontal orientation. Preserve the exact reference face geometry, "
+        "expression, chest shape, silhouette and body proportions, exterior details, colors, "
+        "materials, pose, background and lighting. Fill the square with this close upper-torso "
+        "portrait. Match the reference eye-opening size, eyelid shape, brow, nose, mouth width and "
+        "lip thickness exactly. Keep the same cheek and jaw planes and expression. Magnification "
+        "must not enlarge the eyes, thicken the lips or smooth away the original facial structure.",
     ),
     "full_body": Perspective(
         "Full body — head to feet",
-        PRESERVE + "Move the camera approximately 45 degrees toward the subject's front-left "
-        "side, at chest height. Show the front and left side with convincing depth. Keep the "
-        "entire subject, from the complete head to both complete feet, inside the frame with "
-        "a small surrounding margin. Preserve the original pose.",
+        "Create a full-body studio view of the same subject in the reference image, directly "
+        "from the front at chest height. Keep the complete head and both complete feet inside "
+        "the picture with small margins above the crown and below the soles. Preserve the exact "
+        "original stance and pose, facial geometry and expression, chest shape, waist and hip "
+        "contours, body proportions and silhouette. Keep all existing surface details, colors, "
+        "materials, background, lighting and visual style. Do not redesign any features or alter "
+        "the visible appearance cues. Render one clean coherent image.",
     ),
     "birds_eye": Perspective(
         "Bird's-eye view",

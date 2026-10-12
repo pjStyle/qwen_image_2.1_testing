@@ -51,6 +51,8 @@ The **Perspectives** tab creates selected views from 1–10 reference images of 
 
 Choose any subset and click **Generate selected perspectives**. Results appear in the gallery as each image finishes. The tab uses the shared VRAM preset, defaults to 40 steps and seed 42, and preserves the first reference's output resolution. A random seed (`-1`) is chosen once and reused for every selected view. Each view uses the uploaded originals, rather than a previous generated image.
 
+The half-body and full-body defaults use the exact prompts that passed the [strict perspective experiment](outputs/perspectives_robot_20261010_strict9/report.md), with frontal framing and explicit preservation of facial geometry and body shape. These two prompts were validated on the retained robot reference; inspect their results on other subjects. The prompt fields and **Reset prompts** use these updated defaults after restarting the tool.
+
 Batches are saved in `outputs/perspectives/<batch-id>/`, including retained references, PNGs, prompt/settings JSON files, timings and `batch.json`. The downloadable ZIP contains the whole batch. If a view fails, processing stops and the completed images remain available with a partial ZIP.
 
 ## Poses & Expressions

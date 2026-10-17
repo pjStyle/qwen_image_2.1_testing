@@ -24,6 +24,8 @@ BATCHES_DIR = OUTPUT_DIR / "perspectives"
 class Perspective:
     label: str
     prompt: str
+    negative_prompt: str = ""
+    true_cfg_scale: float = 1.0
 
 
 PRESERVE = (
@@ -32,56 +34,118 @@ PRESERVE = (
     "visual style. Do not add new features or redesign the subject. Produce one coherent image. "
 )
 PERSPECTIVES = {
-    "three_quarter_body": Perspective(
-        "3/4 body — mid-thigh up",
-        "Make a close frontal UPPER-THIGH PORTRAIT of the same subject in the reference images. "
-        "Magnify the subject and frame its upper body: complete head with a small margin above, "
-        "shoulders, chest, abdomen, waist, hips, and only a short length of the upper thighs at "
-        "the bottom. The bottom edge of the picture cuts across the TOP HALF of both thighs, "
-        "just below the hips. Only the top portions of the thighs are inside the picture. "
-        "For a subject with thigh armor or rectangular thigh vents in the reference, the lower "
-        "edge passes through those vents, leaving only their upper portions visible. The thighs "
-        "continue out of the photograph below the frame. Fill the square frame with this "
-        "head-to-upper-thigh portrait. " + PRESERVE,
+    'three_quarter_body': Perspective(
+        '3/4 body — mid-thigh up',
+        'Create a tightly framed head-to-mid-thigh portrait of the same subject shown in the reference '
+        "image. Keep the reference camera direction and the subject's original body rotation, tilted "
+        'stance, head tilt, gaze and arm positions. Keep the complete rounded crown fully inside the '
+        'image. Leave a modest visible background margin above the complete crown, approximately 5 '
+        'percent of the image height. Show the complete head, both shoulders, chest, abdomen, waist, hips'
+        ' and the upper half of both thighs. The lower image border must pass directly through both thigh'
+        ' surfaces at mid-thigh, halfway between hips and knees. Only the upper halves of the thighs are '
+        'visible. The lower halves of both thighs, every part of both knees and all lower legs remain '
+        'completely outside the photograph below its bottom border. The thigh surfaces continue beyond '
+        'the bottom edge; their lower ends are not visible. Use a tight head-to-mid-thigh magnification: '
+        'place the complete head near the upper edge with its visible margin and the midpoints of both '
+        'thighs exactly at the lower edge. Preserve the reference identity, exact facial structure and '
+        'expression, silhouette, body proportions, clothing or exterior design, existing surface details,'
+        ' colors, materials, background, lighting and visual style. Preserve the original balance of '
+        'smooth surfaces and exposed textured structures. Keep the reference eye size, eyelid shape, '
+        'nose, mouth width, lip thickness, cheek planes and jaw shape. Render one coherent subject.',
+        'full-length framing, visible knees, visible lower legs, visible feet, waist-only crop, cut-off '
+        'head, changed pose, straightened stance, squared shoulders, changed body rotation, changed head '
+        'tilt, altered facial identity, enlarged eyes, thickened lips, rounded cheeks, softened jaw, '
+        'redesigned clothing or exterior, added surface markings, simplified exposed textures, changed '
+        'colors, extra limbs, missing limbs, fused fingers, duplicated subject, blur, text, watermark, '
+        'cropped crown, truncated crown, clipped top of head, head touching the top image edge, crown '
+        'touching the top image edge, top border crossing the head, missing headroom above the crown',
+        2.0,
     ),
-    "half_body": Perspective(
-        "1/2 body — torso up",
-        "Create a CLOSE UPPER-TORSO PORTRAIT of the same subject from the reference. Frame tightly "
-        "from just above the complete head to the middle of the abdomen. The lower image border "
-        "cuts across the abdominal surface halfway between the chest and waist. Only the upper "
-        "half of the abdomen is visible. The lower abdomen, waist, pelvis and legs lie below the "
-        "photograph. Show the complete head, neck, shoulders and chest; cut the arms at the bottom "
-        "edge. Keep the original frontal orientation. Preserve the exact reference face geometry, "
-        "expression, chest shape, silhouette and body proportions, exterior details, colors, "
-        "materials, pose, background and lighting. Fill the square with this close upper-torso "
-        "portrait. Match the reference eye-opening size, eyelid shape, brow, nose, mouth width and "
-        "lip thickness exactly. Keep the same cheek and jaw planes and expression. Magnification "
-        "must not enlarge the eyes, thicken the lips or smooth away the original facial structure.",
+    'half_body': Perspective(
+        '1/2 body — torso up',
+        'Create a close head-and-torso portrait of the same subject shown in the reference image. Keep '
+        "the reference camera direction and the subject's original body rotation, tilted stance, head "
+        'tilt, gaze and arm positions. Show the complete head, neck, both shoulders, chest and upper '
+        'abdomen. The bottom image edge must cut across the middle of the abdomen, halfway between the '
+        'chest and waist; the lower abdomen, waist, hips and legs lie outside the image. Crop the arms '
+        'naturally where they cross the bottom image edge. Enlarge the subject to fill the frame with '
+        'this crop. Preserve the reference identity, exact facial structure and expression, silhouette, '
+        'body proportions, clothing or exterior design, existing surface details, colors, materials, '
+        'background, lighting and visual style. Preserve the original balance of smooth surfaces and '
+        'exposed textured structures. Keep the reference eye size, eyelid shape, nose, mouth width, lip '
+        'thickness, cheek planes and jaw shape. Render one coherent subject.',
+        'full-length framing, visible waist, visible hips, visible thighs, visible knees, visible feet, '
+        'chest-only crop, cut-off head, changed pose, straightened stance, squared shoulders, changed '
+        'body rotation, changed head tilt, altered facial identity, enlarged eyes, thickened lips, '
+        'rounded cheeks, softened jaw, redesigned clothing or exterior, added surface markings, '
+        'simplified exposed textures, changed colors, extra limbs, missing limbs, duplicated subject, '
+        'blur, text, watermark',
+        2.0,
     ),
-    "full_body": Perspective(
-        "Full body — head to feet",
-        "Create a full-body studio view of the same subject in the reference image, directly "
-        "from the front at chest height. Keep the complete head and both complete feet inside "
-        "the picture with small margins above the crown and below the soles. Preserve the exact "
-        "original stance and pose, facial geometry and expression, chest shape, waist and hip "
-        "contours, body proportions and silhouette. Keep all existing surface details, colors, "
-        "materials, background, lighting and visual style. Do not redesign any features or alter "
-        "the visible appearance cues. Render one clean coherent image.",
+    'full_body': Perspective(
+        'Full body — head to feet',
+        'Create a complete full-body view of the same subject shown in the reference image. Keep the '
+        "reference camera direction, camera height and perspective. Preserve the subject's original body "
+        'rotation, tilted stance, weight distribution, head tilt, gaze, arm positions and foot placement.'
+        ' Show the entire subject from the complete head to both complete feet, with a small margin above'
+        ' the head and below the feet. Preserve the reference identity, exact facial structure and '
+        'expression, silhouette, body proportions, clothing or exterior design, existing surface details,'
+        ' colors, materials, background, lighting and visual style. Preserve the original balance of '
+        'smooth surfaces and exposed textured structures. Keep the reference eye size, eyelid shape, '
+        'nose, mouth width, lip thickness, cheek planes and jaw shape. Render one coherent subject.',
+        'cropped head, cropped feet, cropped toes, close portrait, changed pose, straightened stance, '
+        'squared shoulders, changed body rotation, changed head tilt, changed foot placement, altered '
+        'facial identity, enlarged eyes, thickened lips, rounded cheeks, softened jaw, redesigned '
+        'clothing or exterior, added surface markings, simplified exposed textures, changed colors, extra'
+        ' limbs, missing limbs, fused fingers, duplicated subject, blur, text, watermark',
+        2.0,
     ),
-    "birds_eye": Perspective(
+    'birds_eye': Perspective(
         "Bird's-eye view",
-        PRESERVE + "Place the camera high above and in front of the subject, looking downward "
-        "approximately 60 degrees. Show the top of the head and shoulders with pronounced "
-        "perspective foreshortening toward the feet. The subject keeps its original pose; the "
-        "camera moves, rather than the subject bending or looking down. Keep the entire subject "
-        "visible, from head to feet.",
+        "Create a whole-body bird's-eye view of the same subject shown in the reference image. Move the "
+        'camera high above the subject, on the same side of the subject as the reference camera, and aim '
+        'it downward approximately 60 degrees below horizontal toward the subject. This is a strong '
+        'overhead perspective: the top of the head and upper surfaces of the shoulders are visible, and '
+        'the body recedes and foreshortens toward the feet. Fit the complete head and both complete feet '
+        'inside the frame with small margins. The subject keeps its original body rotation, tilted '
+        'stance, weight distribution, head tilt, arm positions and foot placement; only the camera '
+        'position changes. Preserve the reference identity, exact facial structure and expression, '
+        'silhouette, body proportions, clothing or exterior design, existing surface details, colors, '
+        'materials, background, lighting and visual style as they appear from this elevated viewpoint. '
+        'Preserve the original balance of smooth surfaces and exposed textured structures. Render one '
+        'coherent subject.',
+        'eye-level camera, weak downward angle, low-angle camera, flat front elevation, subject bending '
+        'forward, subject bowing head, changed pose, straightened stance, squared shoulders, changed body'
+        ' rotation, cropped head, cropped feet, altered facial identity, redesigned clothing or exterior,'
+        ' added surface markings, simplified exposed textures, changed colors, stretched torso, extra '
+        'limbs, missing limbs, disconnected joints, duplicated subject, blur, text, watermark',
+        3.0,
     ),
-    "worms_eye": Perspective(
+    'worms_eye': Perspective(
         "Worm's-eye view",
-        PRESERVE + "Place the camera close to the ground in front of the subject, looking upward "
-        "toward its head. Show a pronounced low-angle perspective, with the feet closer to the "
-        "camera and the head farther away. Keep the entire subject visible, including the "
-        "complete head and both feet. Preserve the original pose.",
+        "Create a whole-body worm's-eye view of the same subject shown in the reference image. Place the "
+        "camera at floor level near the subject's feet, on the same side of the subject as the reference "
+        'camera, and aim it steeply upward toward the head. Use pronounced upward perspective: the feet '
+        'and lower legs are closest to the camera and appear larger, the torso recedes upward, and the '
+        'head appears farther away. Show the undersides of projecting surfaces where this low viewpoint '
+        'makes them visible. Use a wider composition and center the entire projected silhouette, '
+        'including the feet, within the image. Keep the complete head and both complete feet, including '
+        'every toe, fully inside the frame. Leave generous empty background margins on both sides of the '
+        'feet, at least 10 percent of the image width beyond the outermost toe on each side, with clear '
+        'margin below the soles and above the head. Keep the floor-level camera and steep upward aim '
+        'while widening the field of view enough to fit these margins. The subject keeps its original '
+        'body rotation, tilted stance, weight distribution, head tilt, arm positions and foot placement; '
+        'only the camera position changes. Preserve the reference identity, exact facial structure and '
+        'expression, silhouette, body proportions, clothing or exterior design, existing surface details,'
+        ' colors, materials, background, lighting and visual style as they appear from this low '
+        'viewpoint. Preserve the original balance of smooth surfaces and exposed textured structures. '
+        'Render one coherent subject.',
+        'eye-level camera, chest-height camera, weak upward angle, overhead camera, flat front elevation,'
+        ' subject leaning toward camera, changed pose, straightened stance, squared shoulders, changed '
+        'body rotation, cropped head, cropped feet, altered facial identity, redesigned clothing or '
+        'exterior, added surface markings, simplified exposed textures, changed colors, stretched torso, '
+        'extra limbs, missing limbs, disconnected joints, duplicated subject, blur, text, watermark',
+        2.0,
     ),
     "face_closeup": Perspective(
         "Extreme face close-up",
@@ -111,6 +175,7 @@ def prepare_requests(
     negative_prompt: str = "",
     reference_quality: str = ORIGINAL_SIZE,
     vram_preset: str = "medium",
+    use_perspective_settings: bool = False,
 ) -> list[tuple[str, Request]]:
     """Validate every selected view before starting; share one seed and original references."""
     if not selected:
@@ -130,7 +195,10 @@ def prepare_requests(
             prompt += "\n\nAdditional instructions: " + additional_instructions.strip()
         request = validate_request(
             "edit", prompt, aspect, quality, steps, batch_seed, transparent,
-            references, true_cfg_scale, negative_prompt, reference_quality, vram_preset,
+            references,
+            perspective.true_cfg_scale if use_perspective_settings else true_cfg_scale,
+            perspective.negative_prompt if use_perspective_settings else negative_prompt,
+            reference_quality, vram_preset,
         )
         batch_seed = request.seed
         requests.append((key, request))

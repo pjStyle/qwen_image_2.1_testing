@@ -152,6 +152,7 @@ def run_perspectives(
     references, selected, instructions, aspect, quality, steps, seed, transparent, cfg,
     negative_prompt, reference_quality, vram_preset, three_quarter_prompt, half_body_prompt,
     full_body_prompt, birds_eye_prompt, worms_eye_prompt, face_closeup_prompt,
+    use_perspective_settings=True,
     progress=gr.Progress(),
 ):
     references = [item[0] if isinstance(item, (tuple, list)) else item for item in (references or [])]
@@ -164,6 +165,7 @@ def run_perspectives(
             references, selected, instructions, prompts, aspect=aspect, quality=quality,
             steps=int(steps), seed=int(seed), transparent=transparent, true_cfg_scale=cfg,
             negative_prompt=negative_prompt, reference_quality=reference_quality, vram_preset=vram_preset,
+            use_perspective_settings=use_perspective_settings,
         )
     except (TypeError, ValueError) as exc:
         raise gr.Error(str(exc)) from exc
@@ -222,10 +224,13 @@ def perspectives_tab(vram_preset) -> None:
         placeholder="For example: keep the jacket's pattern and the original expression",
     )
     with gr.Accordion("Perspective prompts", open=False):
-        prompt_inputs = [
-            gr.Textbox(label=item.label, value=item.prompt, lines=4)
-            for item in PERSPECTIVES.values()
-        ]
+        prompt_inputs = []
+        for item in PERSPECTIVES.values():
+            prompt_inputs.append(gr.Textbox(label=item.label, value=item.prompt, lines=4))
+            gr.Textbox(
+                label=f"Saved negative prompt · {item.label} · CFG {item.true_cfg_scale:g}",
+                value=item.negative_prompt, lines=2, interactive=False,
+            )
         reset = gr.Button("Reset prompts")
         reset.click(lambda: [item.prompt for item in PERSPECTIVES.values()], outputs=prompt_inputs, queue=False)
     reference_quality = gr.Dropdown(
@@ -233,6 +238,12 @@ def perspectives_tab(vram_preset) -> None:
         label="Reference image size",
     )
     aspect, quality, steps, seed, transparent, cfg, negative, _, _ = controls("perspectives", include_output=False)
+    use_perspective_settings = gr.Checkbox(
+        value=True, label="Use saved per-view negative prompts and CFG",
+        info="Uses CFG 2 for body crops, full body and worm's-eye; CFG 3 for bird's-eye. "
+             "Face close-up keeps CFG 1 and a blank negative prompt. "
+             "Turn off to use the shared CFG and negative prompt controls above.",
+    )
     button = gr.Button("Generate selected perspectives", variant="primary")
     gallery = gr.Gallery(label="Generated perspectives", columns=3, object_fit="contain", interactive=False)
     archive = gr.File(label="Download perspectives ZIP", interactive=False)
@@ -240,7 +251,7 @@ def perspectives_tab(vram_preset) -> None:
     button.click(
         run_perspectives,
         inputs=[references, selected, instructions, aspect, quality, steps, seed, transparent,
-                cfg, negative, reference_quality, vram_preset, *prompt_inputs],
+                cfg, negative, reference_quality, vram_preset, *prompt_inputs, use_perspective_settings],
         outputs=[gallery, archive, status], concurrency_limit=1, concurrency_id="gpu",
     )
 
@@ -249,6 +260,7 @@ def run_poses(
     references, selected, instructions, aspect, quality, steps, seed, transparent, cfg,
     negative_prompt, reference_quality, vram_preset, wall_lean_prompt, victory_cheer_prompt,
     flirty_smile_prompt, confident_hero_prompt, curious_thinker_prompt, surprised_reaction_prompt,
+    use_pose_settings=True,
     progress=gr.Progress(),
 ):
     references = [item[0] if isinstance(item, (tuple, list)) else item for item in (references or [])]
@@ -261,6 +273,7 @@ def run_poses(
             references, selected, instructions, prompts, aspect=aspect, quality=quality,
             steps=int(steps), seed=int(seed), transparent=transparent, true_cfg_scale=cfg,
             negative_prompt=negative_prompt, reference_quality=reference_quality, vram_preset=vram_preset,
+            use_pose_settings=use_pose_settings,
         )
     except (TypeError, ValueError) as exc:
         raise gr.Error(str(exc)) from exc
@@ -323,10 +336,13 @@ def poses_tab(vram_preset) -> None:
         placeholder="For example: keep the jacket's pattern and eye color",
     )
     with gr.Accordion("Pose and expression prompts", open=False):
-        prompt_inputs = [
-            gr.Textbox(label=item.label, value=item.prompt, lines=4)
-            for item in poses.POSES.values()
-        ]
+        prompt_inputs = []
+        for item in poses.POSES.values():
+            prompt_inputs.append(gr.Textbox(label=item.label, value=item.prompt, lines=4))
+            gr.Textbox(
+                label=f"Saved negative prompt · {item.label} · CFG {item.true_cfg_scale:g}",
+                value=item.negative_prompt, lines=2, interactive=False,
+            )
         reset = gr.Button("Reset prompts")
         reset.click(lambda: [item.prompt for item in poses.POSES.values()], outputs=prompt_inputs, queue=False)
     reference_quality = gr.Dropdown(
@@ -334,6 +350,11 @@ def poses_tab(vram_preset) -> None:
         label="Reference image size",
     )
     aspect, quality, steps, seed, transparent, cfg, negative, _, _ = controls("poses", include_output=False)
+    use_pose_settings = gr.Checkbox(
+        value=True, label="Use saved per-preset negative prompts and CFG",
+        info="Uses the saved values shown under Pose and expression prompts. "
+             "Turn off to use the shared CFG and negative prompt controls above.",
+    )
     button = gr.Button("Generate selected poses and expressions", variant="primary")
     gallery = gr.Gallery(
         label="Generated poses and expressions", columns=3, rows=2,
@@ -344,7 +365,7 @@ def poses_tab(vram_preset) -> None:
     button.click(
         run_poses,
         inputs=[references, selected, instructions, aspect, quality, steps, seed, transparent,
-                cfg, negative, reference_quality, vram_preset, *prompt_inputs],
+                cfg, negative, reference_quality, vram_preset, *prompt_inputs, use_pose_settings],
         outputs=[gallery, archive, status], concurrency_limit=1, concurrency_id="gpu",
     )
 

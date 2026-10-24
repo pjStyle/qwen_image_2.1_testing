@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import threading
 import time
 from pathlib import Path
@@ -14,6 +15,7 @@ from qwen_workspace.core import (
     ASPECTS, ORIGINAL_ASPECT, ORIGINAL_SIZE, QUALITY_PIXELS,
     REFERENCE_QUALITY_PIXELS, VRAM_PRESETS, save_result, validate_request,
 )
+from qwen_workspace import model
 from qwen_workspace.model import infer
 from qwen_workspace.metrics import PeakRssSampler
 from qwen_workspace.perspectives import (
@@ -29,6 +31,17 @@ from qwen_workspace.video import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 _pause_flags: dict[str, threading.Event] = {}
+_cancel_event = threading.Event()
+
+
+def cancel_current_job() -> str:
+    _cancel_event.set()
+    return "Cancellation requested. The current model step will stop shortly; completed results are kept."
+
+
+def reset_model() -> str:
+    model.reset_pipeline()
+    return "Model unloaded and CUDA cache cleared. The next job will reload the model."
 
 
 def run(
@@ -60,6 +73,8 @@ def run(
         raise gr.Error(str(exc)) from exc
 
     try:
+        _cancel_event.clear()
+        model.set_cancel_event(_cancel_event)
         progress(0, desc="Checking model download and loading pipeline. First run can take a while.")
         timings: dict[str, float | int] = {}
         with PeakRssSampler() as ram_sampler:
@@ -88,6 +103,8 @@ def run(
         )
     except Exception as exc:
         log.exception("Generation failed after %.2f seconds", time.perf_counter() - generation_started)
+        if isinstance(exc, model.InferenceCancelled):
+            raise gr.Error("Generation cancelled. Your prompt and settings are still in the form.") from exc
         try:
             import torch
 
@@ -99,6 +116,8 @@ def run(
         except ImportError:
             pass
         raise gr.Error(f"Generation failed: {exc}") from exc
+    finally:
+        model.set_cancel_event(None)
 
 
 def controls(prefix: str, *, include_output: bool = True):
@@ -171,11 +190,14 @@ def run_perspectives(
         raise gr.Error(str(exc)) from exc
     gallery = []
     batch = None
+    iterator = None
     try:
+        _cancel_event.clear()
+        model.set_cancel_event(_cancel_event)
         batch = create_batch(requests)
         total = len(requests)
         used_seed = requests[0][1].seed
-        yield gallery, None, f"Starting {total} perspectives · seed **{used_seed}** · **{VRAM_PRESETS[vram_preset]}**"
+        yield list(gallery), None, f"Starting {total} perspectives · seed **{used_seed}** · **{VRAM_PRESETS[vram_preset]}**"
         iterator = generate_batch(batch)
         for index, (key, _) in enumerate(requests):
             progress(index / total, desc=f"Perspective {index + 1}/{total}: {PERSPECTIVES[key].label}")
@@ -189,7 +211,7 @@ def run_perspectives(
         next(iterator, None)
         archive = zip_batch(batch)
         progress(1, desc="Perspectives ready")
-        yield gallery, str(archive), (
+        yield list(gallery), str(archive), (
             f"Completed **{total}/{total}** · seed **{used_seed}** · **{VRAM_PRESETS[vram_preset]}**\n\n"
             f"Saved to `outputs/perspectives/{batch.folder.name}`. ZIP includes images, prompts, settings and references."
         )
@@ -201,7 +223,11 @@ def run_perspectives(
                 archive = str(zip_batch(batch))
             except Exception:
                 log.exception("Could not package partial perspective batch")
-        yield gallery, archive, f"**Stopped after {len(gallery)}/{len(requests)} perspectives:** {exc}. Completed images remain saved."
+        yield list(gallery), archive, f"**Stopped after {len(gallery)}/{len(requests)} perspectives:** {exc}. Completed images remain saved."
+    finally:
+        model.set_cancel_event(None)
+        if iterator is not None:
+            iterator.close()
 
 
 def perspectives_tab(vram_preset) -> None:
@@ -253,6 +279,7 @@ def perspectives_tab(vram_preset) -> None:
         inputs=[references, selected, instructions, aspect, quality, steps, seed, transparent,
                 cfg, negative, reference_quality, vram_preset, *prompt_inputs, use_perspective_settings],
         outputs=[gallery, archive, status], concurrency_limit=1, concurrency_id="gpu",
+        show_progress="minimal",
     )
 
 
@@ -281,6 +308,8 @@ def run_poses(
     batch = None
     iterator = None
     try:
+        _cancel_event.clear()
+        model.set_cancel_event(_cancel_event)
         batch = poses.create_batch(requests)
         total = len(requests)
         used_seed = requests[0][1].seed
@@ -312,6 +341,7 @@ def run_poses(
                 log.exception("Could not package partial pose batch")
         yield list(gallery), archive, f"**Stopped after {len(gallery)}/{len(requests)} poses and expressions:** {exc}. Completed images remain saved."
     finally:
+        model.set_cancel_event(None)
         if iterator is not None:
             iterator.close()
 
@@ -367,6 +397,7 @@ def poses_tab(vram_preset) -> None:
         inputs=[references, selected, instructions, aspect, quality, steps, seed, transparent,
                 cfg, negative, reference_quality, vram_preset, *prompt_inputs, use_pose_settings],
         outputs=[gallery, archive, status], concurrency_limit=1, concurrency_id="gpu",
+        show_progress="minimal",
     )
 
 
@@ -454,31 +485,69 @@ def run_video_job(job_id: str, aspect: str, quality: str, steps: float, seed: fl
         raise gr.Error(str(exc)) from exc
     event = threading.Event()
     _pause_flags[job_id] = event
+    _cancel_event.clear()
+    model.set_cancel_event(_cancel_event)
+    updates: queue.Queue = queue.Queue()
+    frame_acknowledged: queue.Queue = queue.Queue()
 
     def on_frame(done: int, total: int, remaining: float | None) -> None:
-        estimate = f" · about {remaining / 60:.1f} min remaining" if remaining is not None else ""
-        progress(done / total, desc=f"Qwen frame {done}/{total}{estimate}")
+        updates.put(("frame", done, total, remaining))
+        # Wait for the generator to send this preview. A separate signal keeps
+        # the worker from consuming its own frame notification from the queue.
+        frame_acknowledged.get()
         if event.is_set():
             raise PauseRequested()
 
+    def process() -> None:
+        try:
+            result = process_job(
+                job_id, legacy_long_edge, int(steps), int(seed), prompt,
+                on_progress=on_frame, expected_mode=mode, aspect=aspect, quality=quality,
+                transparent=transparent, true_cfg_scale=true_cfg_scale,
+                negative_prompt=negative_prompt, vram_preset=vram_preset,
+            )
+            updates.put(("done", result))
+        except Exception as exc:
+            updates.put(("error", exc))
+
+    worker = threading.Thread(target=process, daemon=True)
+    video_path = None
     try:
-        result = process_job(
-            job_id, legacy_long_edge, int(steps), int(seed), prompt,
-            on_progress=on_frame, expected_mode=mode, aspect=aspect, quality=quality,
-            transparent=transparent, true_cfg_scale=true_cfg_scale,
-            negative_prompt=negative_prompt,
-            vram_preset=vram_preset,
-        )
-        job = load_job(job_id)
-        return preview_frames(job_id, processed=True), str(result), _video_status(job, "Video ready to preview or download.")
-    except PauseRequested:
-        job = load_job(job_id)
-        return preview_frames(job_id, processed=True), None, _video_status(job, "Paused after the current frame. Press Start / resume to continue.")
-    except Exception as exc:
-        log.exception("Video batch failed")
-        job = load_job(job_id)
-        return preview_frames(job_id, processed=True), None, _video_status(job, f"**Stopped:** {exc}. Fix the issue and press Start / resume.")
+        gallery = preview_frames(job_id, processed=True, include_latest=True)
+        yield gallery, video_path, _video_status(load_job(job_id), "Processing video frames.")
+        worker.start()
+        while True:
+            message = updates.get()
+            if message[0] == "frame":
+                _, done, total, remaining = message
+                estimate = f" · about {remaining / 60:.1f} min remaining" if remaining is not None else ""
+                progress(done / total, desc=f"Qwen frame {done}/{total}{estimate}")
+                gallery = preview_frames(job_id, processed=True, include_latest=True)
+                job = load_job(job_id)
+                yield gallery, None, _video_status(job, f"Completed frame **{done}/{total}**.{estimate}")
+                frame_acknowledged.put(None)
+            elif message[0] == "done":
+                video_path = str(message[1])
+                job = load_job(job_id)
+                yield preview_frames(job_id, processed=True, include_latest=True), video_path, _video_status(job, "Video ready to preview or download.")
+                break
+            else:
+                exc = message[1]
+                if isinstance(exc, PauseRequested):
+                    job = load_job(job_id)
+                    yield preview_frames(job_id, processed=True, include_latest=True), None, _video_status(job, "Paused after the current frame. Press Start / resume to continue.")
+                else:
+                    log.error("Video batch failed: %s", exc)
+                    job = load_job(job_id)
+                    yield preview_frames(job_id, processed=True, include_latest=True), None, _video_status(job, f"**Stopped:** {exc}. Fix the issue and press Start / resume.")
+                break
     finally:
+        _cancel_event.set()
+        event.set()
+        frame_acknowledged.put(None)
+        if worker.ident is not None:
+            worker.join()
+        model.set_cancel_event(None)
         _pause_flags.pop(job_id, None)
 
 
@@ -581,6 +650,7 @@ def video_tab(mode: str, vram_preset) -> None:
                         transparent, cfg, negative_prompt, legacy_long_edge, mode_state, vram_preset],
         [result_gallery, completed_video, video_status],
         concurrency_limit=1, concurrency_id="gpu",
+        show_progress="minimal",
     )
     pause_button.click(pause_video_job, [job_id], [video_status], queue=False)
     source_zip_button.click(lambda value, selected: download_frames(value, False, selected), [job_id, mode_state], [source_zip])
@@ -594,6 +664,12 @@ def build_app() -> gr.Blocks:
             "Generate images, edit images, create perspectives, poses and expressions, upscale video, or experimentally edit a video. First use downloads about 33 GB of model files; "
             "the console shows download progress. Small size is quickest; Edit preserves input resolution by default."
         )
+        with gr.Row():
+            cancel_button = gr.Button("Cancel current job")
+            reset_button = gr.Button("Reset model / clear VRAM")
+        resource_status = gr.Markdown()
+        cancel_button.click(cancel_current_job, outputs=[resource_status], queue=False)
+        reset_button.click(reset_model, outputs=[resource_status], concurrency_limit=1, concurrency_id="gpu")
         vram_preset = gr.Dropdown(
             choices=[(label, value) for value, label in VRAM_PRESETS.items()],
             value="base", label="VRAM preset",

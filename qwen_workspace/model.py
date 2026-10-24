@@ -18,6 +18,7 @@ from .core import (
 log = logging.getLogger(__name__)
 _pipeline = None
 _pipeline_preset = None
+_cancel_event = None
 MODEL_REVISION = "790c92633540aa0cb11d9abf19eb46d861714758"
 MODEL_DIR = ROOT / "models" / "Qwen-Image-2.1"
 INT8_TRANSFORMER_SKIP_MODULES = [
@@ -133,6 +134,38 @@ def get_pipeline(vram_preset: str = "base"):
     return pipe
 
 
+def set_cancel_event(event) -> None:
+    """Set the cooperative cancellation event for the active inference, if any."""
+    global _cancel_event
+    _cancel_event = event
+
+
+class InferenceCancelled(Exception):
+    """Raised between denoising steps after the user cancels a job."""
+
+
+def reset_pipeline() -> None:
+    """Unload the cached model and release Python and CUDA allocations."""
+    global _pipeline, _pipeline_preset
+    import torch
+
+    old_pipe = _pipeline
+    _pipeline = _pipeline_preset = None
+    if old_pipe is not None:
+        try:
+            old_pipe.remove_all_hooks()
+        except Exception:
+            log.exception("Could not remove all pipeline offload hooks during reset.")
+        del old_pipe
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        try:
+            torch.cuda.ipc_collect()
+        except (AttributeError, RuntimeError):
+            log.debug("CUDA IPC cache collection was unavailable.", exc_info=True)
+
+
 def infer(request: Request, timings: dict[str, float | int] | None = None) -> Image.Image:
     import torch
 
@@ -188,12 +221,15 @@ def infer(request: Request, timings: dict[str, float | int] | None = None) -> Im
     if timings is not None:
         timings["input_prepare_seconds"] = pipeline_start - started - timings["pipeline_load_seconds"]
 
-        def on_step_end(_pipe, step, _timestep, callback_kwargs):
+    def on_step_end(_pipe, step, _timestep, callback_kwargs):
+        if _cancel_event is not None and _cancel_event.is_set():
+            raise InferenceCancelled("Cancelled by user.")
+        if timings is not None:
             if step == 0:
                 timings["first_step_seconds"] = time.perf_counter() - pipeline_start
-            return callback_kwargs
+        return callback_kwargs
 
-        kwargs["callback_on_step_end"] = on_step_end
+    kwargs["callback_on_step_end"] = on_step_end
     with torch.inference_mode():
         result = pipe(**kwargs).images[0]
     pipeline_end = time.perf_counter()

@@ -224,13 +224,16 @@ def _frame_settings(steps: int, seed: int, prompt: str, source_size: tuple[int, 
     }
 
 
-def preview_frames(job_id: str, processed: bool = False, limit: int = 12) -> list[tuple[str, str]]:
+def preview_frames(job_id: str, processed: bool = False, limit: int = 12,
+                   include_latest: bool = False) -> list[tuple[str, str]]:
     job = load_job(job_id)
     directory = _job_dir(job_id) / (f"{_processed_name(job)}_frames" if processed else "source_frames")
     frames = numbered_frames(directory)
     if not frames:
         return []
     indices = sorted({round(i * (len(frames) - 1) / min(limit - 1, len(frames) - 1)) for i in range(min(limit, len(frames)))}) if len(frames) > 1 else [0]
+    if include_latest and len(frames) > 1:
+        indices = sorted(set(indices[:-1] + [len(frames) - 1]))
     return [(str(frames[index]), f"Frame {int(frames[index].stem) + 1} / {job['frame_count']}") for index in indices]
 
 

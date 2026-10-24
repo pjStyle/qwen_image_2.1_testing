@@ -11,7 +11,7 @@ from pathlib import Path
 from PIL import Image
 
 from .core import (
-    MODEL_ID, ORIGINAL_ASPECT, ROOT, VRAM_PRESETS, Request, prepared_prompt,
+    MODEL_ID, ORIGINAL_ASPECT, POSE_ASPECT, ROOT, VRAM_PRESETS, Request, prepared_prompt,
     reference_dimensions, validate_vram_preset,
 )
 
@@ -201,7 +201,7 @@ def infer(request: Request, timings: dict[str, float | int] | None = None) -> Im
         )
         images.append(image)
     model_width, model_height = request.width, request.height
-    if request.aspect == ORIGINAL_ASPECT:
+    if request.aspect in {ORIGINAL_ASPECT, POSE_ASPECT}:
         model_width = (model_width + 15) // 16 * 16
         model_height = (model_height + 15) // 16 * 16
     kwargs = {
@@ -235,7 +235,7 @@ def infer(request: Request, timings: dict[str, float | int] | None = None) -> Im
     pipeline_end = time.perf_counter()
     if timings is not None:
         timings["pipeline_seconds"] = pipeline_end - pipeline_start
-    if request.aspect == ORIGINAL_ASPECT and result.size != (request.width, request.height):
+    if request.aspect in {ORIGINAL_ASPECT, POSE_ASPECT} and result.size != (request.width, request.height):
         result = result.resize((request.width, request.height), Image.Resampling.LANCZOS)
     if timings is not None:
         timings["output_resize_seconds"] = time.perf_counter() - pipeline_end

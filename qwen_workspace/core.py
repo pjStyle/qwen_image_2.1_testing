@@ -26,6 +26,7 @@ ASPECTS: dict[str, tuple[int, int]] = {
     "9:16": (9, 16),
 }
 ORIGINAL_ASPECT = "Original image"
+POSE_ASPECT = "Pose image"
 ORIGINAL_SIZE = "Preserve input resolution"
 QUALITY_PIXELS = {
     "Small (512×512)": 512**2,

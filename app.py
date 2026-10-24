@@ -12,10 +12,10 @@ from pathlib import Path
 import gradio as gr
 
 from qwen_workspace.core import (
-    ASPECTS, ORIGINAL_ASPECT, ORIGINAL_SIZE, QUALITY_PIXELS,
+    ASPECTS, ORIGINAL_ASPECT, POSE_ASPECT, ORIGINAL_SIZE, QUALITY_PIXELS,
     REFERENCE_QUALITY_PIXELS, VRAM_PRESETS, save_result, validate_request,
 )
-from qwen_workspace import model
+from qwen_workspace import model, pose_analyzer, pose_references
 from qwen_workspace.model import infer
 from qwen_workspace.metrics import PeakRssSampler
 from qwen_workspace.perspectives import (
@@ -40,6 +40,7 @@ def cancel_current_job() -> str:
 
 
 def reset_model() -> str:
+    pose_analyzer.reset()
     model.reset_pipeline()
     return "Model unloaded and CUDA cache cleared. The next job will reload the model."
 
@@ -122,10 +123,13 @@ def run(
 
 def controls(prefix: str, *, include_output: bool = True):
     with gr.Row():
-        editing = prefix in {"edit", "perspectives", "poses"}
+        editing = prefix in {"edit", "perspectives", "poses", "pose_references"}
+        native_aspects = ([POSE_ASPECT, ORIGINAL_ASPECT] if prefix == "pose_references"
+                          else [ORIGINAL_ASPECT] if editing else [])
+        default_aspect = native_aspects[0] if editing else "1:1"
         aspect = gr.Dropdown(
-            choices=([ORIGINAL_ASPECT] if editing else []) + list(ASPECTS),
-            value=ORIGINAL_ASPECT if editing else "1:1",
+            choices=native_aspects + list(ASPECTS),
+            value=default_aspect,
             label="Aspect ratio",
         )
         quality = gr.Dropdown(
@@ -136,20 +140,21 @@ def controls(prefix: str, *, include_output: bool = True):
         if editing:
             aspect.change(
                 lambda selected_aspect, selected_quality: (
-                    "Standard (~1 MP)" if selected_aspect != ORIGINAL_ASPECT and selected_quality == ORIGINAL_SIZE
+                    "Standard (~1 MP)" if selected_aspect not in native_aspects and selected_quality == ORIGINAL_SIZE
                     else selected_quality
                 ),
                 [aspect, quality], [quality], queue=False,
             )
             quality.change(
                 lambda selected_quality, selected_aspect: (
-                    ORIGINAL_ASPECT if selected_quality == ORIGINAL_SIZE else selected_aspect
+                    (selected_aspect if selected_aspect in native_aspects else default_aspect)
+                    if selected_quality == ORIGINAL_SIZE else selected_aspect
                 ),
                 [quality, aspect], [aspect], queue=False,
             )
     with gr.Row():
         steps = gr.Slider(1, 80, value=40, step=1, label="Steps")
-        seed = gr.Number(value=42 if prefix in {"perspectives", "poses"} else -1, precision=0, label="Seed (-1 for random)")
+        seed = gr.Number(value=42 if prefix in {"perspectives", "poses", "pose_references"} else -1, precision=0, label="Seed (-1 for random)")
     transparent = gr.Checkbox(label="Request transparent background (RGBA)")
     with gr.Accordion("Advanced guidance", open=False):
         gr.Markdown(
@@ -399,6 +404,165 @@ def poses_tab(vram_preset) -> None:
         outputs=[gallery, archive, status], concurrency_limit=1, concurrency_id="gpu",
         show_progress="minimal",
     )
+
+
+def _pose_review_updates(items, message):
+    updates = [items, message]
+    for i in range(10):
+        item = items[i] if i < len(items) else None
+        valid = bool(item and item.get("extracted_prompt") and not item.get("error"))
+        updates.extend([
+            gr.update(visible=item is not None),
+            gr.update(value=item["path"] if item else None),
+            gr.update(value=valid, interactive=valid),
+            gr.update(value=item.get("reviewed_prompt", "") if item else "", interactive=valid,
+                      label=(item["filename"] + (" · " + item["error"] if item.get("error") else "")) if item else "Pose prompt"),
+        ])
+    return updates
+
+
+def invalidate_pose_uploads(values, items):
+    try:
+        pose_references.assert_current(items, values)
+        return [gr.skip()] * 43
+    except (ValueError, OSError):
+        return [*_pose_review_updates([], "Pose uploads changed. Click Analyze poses to create prompts."), None]
+
+
+def analyze_pose_uploads(values, previous, *prompts):
+    try:
+        pose_references.assert_current(previous, values)
+        items = pose_references.review(previous, prompts) if prompts else [dict(i) for i in previous]
+    except (ValueError, OSError):
+        try:
+            items = pose_references.new_items(values)
+        except (ValueError, OSError) as exc:
+            raise gr.Error(str(exc)) from exc
+    pending = [i for i in items if not i.get("extracted_prompt") or i.get("error")]
+    if not pending:
+        yield _pose_review_updates(items, "All poses are analyzed. Review the prompts before generating.")
+        return
+    _cancel_event.clear()
+    yield _pose_review_updates(items, "Analyzing poses. First use downloads about 4.3 GB; watch the console.")
+    iterator = pose_analyzer.analyze(pending, _cancel_event)
+    try:
+        for result in iterator:
+            items = [result if i["id"] == result["id"] else i for i in items]
+            done = sum(bool(i.get("extracted_prompt")) and not i.get("error") for i in items)
+            yield _pose_review_updates(items, f"Analyzed {done}/{len(items)}. Review prompts; failed items can be reanalyzed.")
+    except Exception as exc:
+        log.exception("Pose analysis stopped")
+        yield _pose_review_updates(items, f"Analysis stopped: {exc}. Successful descriptions are retained.")
+    finally:
+        iterator.close()
+
+
+def save_pose_library(values, items, name, parent, *prompts):
+    try:
+        pose_references.assert_current(items, values)
+        reviewed = pose_references.review(items, prompts)
+        identifier = pose_references.save_set(reviewed, name, parent)
+        return gr.update(choices=pose_references.list_sets(), value=identifier), identifier, f"Saved new pose-set version: {identifier}"
+    except (ValueError, OSError) as exc:
+        raise gr.Error(str(exc)) from exc
+
+
+def load_pose_library(identifier):
+    try:
+        data = pose_references.load_set(identifier)
+        items = data["items"]
+        return [pose_references.paths([i["path"] for i in items]), data["name"], identifier,
+                *_pose_review_updates(items, "Pose set loaded. Review prompts and select poses before generating.")]
+    except (ValueError, OSError, KeyError) as exc:
+        raise gr.Error(str(exc)) from exc
+
+
+def run_pose_references(subjects, values, items, aspect, quality, steps, seed,
+                        transparent, cfg, negative, reference_quality, vram_preset, *review_values):
+    try:
+        pose_references.assert_current(items, values)
+        selected = pose_references.review(items, review_values[10:], review_values[:10])
+        requests = pose_references.prepare_requests(
+            subjects, selected, aspect=aspect, quality=quality, steps=int(steps), seed=int(seed),
+            transparent=transparent, true_cfg_scale=cfg, negative_prompt=negative,
+            reference_quality=reference_quality, vram_preset=vram_preset,
+        )
+    except (ValueError, TypeError, OSError) as exc:
+        raise gr.Error(str(exc)) from exc
+    gallery, batch, iterator = [], None, None
+    _cancel_event.clear()
+    model.set_cancel_event(_cancel_event)
+    try:
+        pose_analyzer.reset()
+        batch = pose_references.create_batch(requests)
+        yield gallery, None, f"Starting {len(requests)} poses · seed {requests[0][1].seed}"
+        iterator = pose_references.generate_batch(batch)
+        for result in iterator:
+            gallery.append((str(batch[0] / result["image"]), result["label"]))
+            yield list(gallery), None, f"Completed {len(gallery)}/{len(requests)}"
+        yield gallery, str(pose_references.zip_batch(batch)), f"Completed {len(gallery)}/{len(requests)} · saved in {batch[0]}"
+    except Exception as exc:
+        log.exception("Pose reference generation stopped")
+        if iterator is not None:
+            iterator.close()
+        archive = str(pose_references.zip_batch(batch)) if batch else None
+        yield gallery, archive, f"Stopped after {len(gallery)}/{len(requests)}: {exc}. Completed results are retained."
+    finally:
+        if iterator is not None:
+            iterator.close()
+        model.set_cancel_event(None)
+
+
+def pose_references_tab(vram_preset):
+    gr.Markdown("Upload subject images and separate pose examples showing one person or humanoid each. "
+                "Analyze, review the descriptions, then apply selected poses. Only subject images go to Qwen Image Edit. "
+                "Check hand contacts, left/right positions and expressions before generating. "
+                "Text descriptions approximate poses; exact skeletal matching is not guaranteed.")
+    gr.Markdown("Output aspect ratio defaults to **Pose image**, using each example's shape. "
+                "Preserve input resolution uses that pose image's dimensions; other sizes retain its ratio. "
+                "Choose Original image to use the first subject image's shape instead.")
+    subjects = gr.Gallery(label="Subject images (1–10)", columns=4,
+                          type="filepath", sources=["upload"], interactive=True,
+                          file_types=[".png", ".jpg", ".jpeg", ".webp", ".bmp"])
+    examples = gr.Gallery(label="Pose examples (1–10, in upload order)", columns=4,
+                          type="filepath", sources=["upload"], interactive=True,
+                          file_types=[".png", ".jpg", ".jpeg", ".webp", ".bmp"])
+    state, parent = gr.State([]), gr.State(None)
+    with gr.Row():
+        analyze = gr.Button("Analyze poses", variant="primary")
+        library = gr.Dropdown(choices=pose_references.list_sets(), label="Saved pose sets")
+        refresh = gr.Button("Refresh library")
+        load = gr.Button("Load pose set")
+    name = gr.Textbox(label="Pose-set name", value="Pose set")
+    save = gr.Button("Save pose set as new version")
+    status = gr.Markdown()
+    review_outputs, checks, prompts = [], [], []
+    for _ in range(10):
+        with gr.Row(visible=False) as row:
+            thumbnail = gr.Image(label="Pose example", interactive=False, height=220)
+            with gr.Column():
+                check = gr.Checkbox(label="Generate this pose", value=False, interactive=False)
+                prompt = gr.Textbox(label="Pose prompt", lines=5, interactive=False)
+        review_outputs.extend([row, thumbnail, check, prompt])
+        checks.append(check)
+        prompts.append(prompt)
+    outputs = [state, status, *review_outputs]
+    examples.change(invalidate_pose_uploads, [examples, state], [*outputs, parent], queue=False)
+    analyze.click(analyze_pose_uploads, [examples, state, *prompts], outputs, concurrency_id="gpu", concurrency_limit=1)
+    save.click(save_pose_library, [examples, state, name, parent, *prompts], [library, parent, status])
+    refresh.click(lambda: gr.update(choices=pose_references.list_sets()), outputs=library)
+    load.click(load_pose_library, [library], [examples, name, parent, *outputs])
+    reference_quality = gr.Dropdown(choices=[ORIGINAL_SIZE, *REFERENCE_QUALITY_PIXELS],
+                                    value=ORIGINAL_SIZE, label="Subject reference image size")
+    aspect, quality, steps, seed, transparent, cfg, negative, _, _ = controls("pose_references", include_output=False)
+    generate = gr.Button("Generate selected poses", variant="primary")
+    results = gr.Gallery(label="Generated poses", columns=3, interactive=False)
+    archive = gr.File(label="Download pose batch ZIP", interactive=False)
+    generation_status = gr.Markdown()
+    generate.click(run_pose_references,
+                   [subjects, examples, state, aspect, quality, steps, seed, transparent, cfg,
+                    negative, reference_quality, vram_preset, *checks, *prompts],
+                   [results, archive, generation_status], concurrency_id="gpu", concurrency_limit=1)
 
 
 def _video_status(job: dict, extra: str = "") -> str:
@@ -725,6 +889,8 @@ def build_app() -> gr.Blocks:
                 perspectives_tab(vram_preset)
             with gr.Tab("Poses & Expressions"):
                 poses_tab(vram_preset)
+            with gr.Tab("Pose References"):
+                pose_references_tab(vram_preset)
             with gr.Tab("Video"):
                 video_tab("upscale", vram_preset)
             with gr.Tab("Video Edit (experimental)"):
